@@ -1,0 +1,7 @@
+# FinSight 智研投 依赖（Python 3.12）
+# 其余依赖（numpy/matplotlib/lxml/requests 等）为环境已有，未重复列出。
+akshare==1.19.1
+openpyxl==3.1.5
+pandas==3.0.6
+streamlit==1.65.0
+pytest==9.1.1
