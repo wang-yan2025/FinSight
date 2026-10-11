@@ -24,7 +24,10 @@ VERIFY_DISCLAIMER = (
 
 
 def _status_badge(status: str) -> str:
-    return f"【{STATUS_CN.get(status, status)}】"
+    """状态标记：错误与待复核事项视觉区分。"""
+    marks = {"pass": "✔", "fail": "✘", "insufficient_evidence": "○",
+             "unable_to_verify": "○", "needs_review": "⚠"}
+    return f"{marks.get(status, '·')}【{STATUS_CN.get(status, status)}】"
 
 
 def _result_lines(r) -> list[str]:
@@ -117,11 +120,12 @@ def report_to_docx_bytes(report: VerificationReportData) -> bytes:
     for r in report.results:
         row = table.add_row().cells
         row[0].text = r.cid
-        row[1].text = STATUS_CN.get(r.status, r.status)
+        row[1].text = _status_badge(r.status)
         row[2].text = r.claim_text[:80]
         row[3].text = (f"{r.claimed_display} vs {r.reference_display}"
                        + (f"（{r.difference}）" if r.difference else ""))
         row[4].text = r.suggestion or ("—".join(r.limitations[:1]) if r.limitations else "—")
+    doc.add_page_break()
 
     if report.source_findings:
         doc.add_heading("来源描述检查", level=1)

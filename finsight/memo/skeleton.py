@@ -29,7 +29,8 @@ DISCLAIMER = (
 )
 
 SECTION_ORDER = ["summary", "company", "financials", "thesis", "risks",
-                 "scenarios", "monitoring", "open_questions", "appendix"]
+                 "scenarios", "monitoring", "open_questions", "appendix",
+                 "appendix_signals"]
 
 SECTION_TITLES = {
     "summary": "一、研究摘要",
@@ -40,8 +41,20 @@ SECTION_TITLES = {
     "scenarios": "六、情景分析",
     "monitoring": "七、持续跟踪指标",
     "open_questions": "八、待核实问题",
-    "appendix": "附录、证据清单",
+    "appendix": "附录A、证据清单",
+    "appendix_signals": "附录B、历史风险信号完整清单",
 }
+
+# 风险节默认突出窗口：目标报告期往前 8 个季度（仅展示分层，
+# 不改变信号计算、证据登记与核验提取范围）
+RISKS_RECENT_QUARTERS = 8
+
+
+def _period_index(tag: str):
+    """'2024Q3' → 2024*4+3；解析失败返回 None。"""
+    import re
+    m = re.match(r"^(20\d{2})Q([1-4])$", tag or "")
+    return int(m.group(1)) * 4 + int(m.group(2)) if m else None
 
 
 @dataclass
@@ -106,6 +119,8 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
         tag = period_tag or period
         e = ev.get(f"E-{eid_prefix}-{tag}")
         return e.value if e else None
+
+    _target_idx = _period_index(period)   # 风险展示分层窗口基准
 
     # ---- 一、研究摘要（事实部分确定性；判断部分留给 LLM）----
     summary = MemoSection("summary", SECTION_TITLES["summary"], "mixed", status="ready")
@@ -178,19 +193,42 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
     if e_nm is not None:
         thesis.facts.append(f"支持面（事实）：净利率 {format_ratio(e_nm.value)} [E-NM-{period}]")
     sig_eids = [eid for eid in ev if eid.startswith("E-SIG-")]
+    recent_eids = [eid for eid in sig_eids if _period_index(eid.split("-")[-1]) is not None
+                   and _target_idx is not None
+                   and _period_index(eid.split("-")[-1]) >= _target_idx - RISKS_RECENT_QUARTERS + 1]
     if sig_eids:
-        thesis.facts.append("反面因素（规则信号）：" + "；".join(f"[{eid}]" for eid in sig_eids))
+        shown = recent_eids if recent_eids else sig_eids[-5:]
+        extra = f"等共 {len(sig_eids)} 条" if len(sig_eids) > len(shown) else ""
+        thesis.facts.append("反面因素（规则信号，近期优先）：" + "；".join(f"[{e}]" for e in shown)
+                            + (f"（{extra}，完整清单见附录B）" if extra else ""))
     else:
         thesis.facts.append("反面因素：当前数据下 R1—R4 均未触发（未触发≠无风险）")
     memo.sections.append(thesis)
 
-    # ---- 五、关键风险（整合 R1—R4）----
+    # ---- 五、关键风险（近期突出 + 完整历史移附录B，不改变核验提取范围）----
     risks = MemoSection("risks", SECTION_TITLES["risks"], "deterministic")
     sig_list = [e for eid, e in ev.items() if eid.startswith("E-SIG-")]
+
+    def _sig_order(e):
+        return e.eid
+
+    recent, history = [], []
+    for e in sig_list:
+        idx = _period_index(e.eid.split("-")[-1])
+        (recent if _target_idx is not None and idx is not None
+                and idx >= _target_idx - RISKS_RECENT_QUARTERS + 1 else history).append(e)
     if sig_list:
-        for e in sorted(sig_list, key=lambda x: x.eid):
+        for e in sorted(recent, key=_sig_order):
             level_cn = "较高关注" if "high" in (e.note or "") else "关注"
             risks.facts.append(f"- [{level_cn}] {e.derivation} [{e.eid}]")
+        if history:
+            tags = [e.eid.split("-")[-1] for e in history if _period_index(e.eid.split("-")[-1])]
+            scope = f"{min(tags)}–{max(tags)}" if tags else "历史各期"
+            risks.facts.append(
+                f"- 另有 {len(history)} 条更早期间（{scope}）的风险信号未在此展开，"
+                "完整清单见附录B（信号计算与统计口径不受展示分层影响）")
+        risks.facts.append(f"风险摘要时间范围：目标报告期 {period} 往前 {RISKS_RECENT_QUARTERS} 个季度；"
+                           f"全历史共 {len(sig_list)} 条。")
     else:
         risks.facts.append("当前数据下 R1—R4 规则均未触发信号；未触发不代表不存在风险。")
     risks.facts.append("规则阈值说明：R1—R4 为第一版启发式阈值（详见引擎模块），不代表行业标准。")
@@ -225,11 +263,28 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
     ])
     memo.sections.append(open_q)
 
-    # ---- 附录、证据清单 ----
+    # ---- 附录A、证据清单 ----
     appendix = MemoSection("appendix", SECTION_TITLES["appendix"], "deterministic")
     appendix.facts.append(
         f"数据快照：目标报告期 {period}；各表实际采用期间 "
         + "、".join(f"{k}={v}" for k, v in snapshot.get("periods", {}).items())
         + f"；数据来源：{snapshot.get('data_source', '')}（公司名称待补充）")
     memo.sections.append(appendix)
+
+    # ---- 附录B、历史风险信号完整清单（完整文本保留：核验提取范围不受展示分层影响）----
+    appendix_b = MemoSection("appendix_signals", SECTION_TITLES["appendix_signals"],
+                             "deterministic")
+    all_sigs = sorted((e for eid, e in ev.items() if eid.startswith("E-SIG-")),
+                      key=lambda x: x.eid)
+    if all_sigs:
+        tags = [e.eid.split("-")[-1] for e in all_sigs if _period_index(e.eid.split("-")[-1])]
+        scope = f"{min(tags)}–{max(tags)}" if tags else "各历史期间"
+        appendix_b.facts.append(
+            f"共 {len(all_sigs)} 条风险信号（{scope}）；本清单为完整历史，"
+            "与第五节的近期摘要仅为展示分层，统计与核验口径一致。")
+        for e in all_sigs:
+            appendix_b.facts.append(f"- {e.derivation} [{e.eid}]")
+    else:
+        appendix_b.facts.append("无历史风险信号。")
+    memo.sections.append(appendix_b)
     return memo

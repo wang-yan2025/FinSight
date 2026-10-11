@@ -92,6 +92,15 @@ def render_bench_page() -> None:
 
     session = st.session_state.get(_SESSION_KEY)
 
+    # ---- 会话信息面板（股票/期间/快照/版本一目了然）----
+    st.caption(
+        f"当前标的：**{to_em_symbol(data['code'])}**｜目标报告期：**{labels.get(target_date, str(target_date)[:10])}**"
+        + (f"｜报告版本：**{session.current_vid}**（共 {len(session.versions)} 版）"
+           if session else "｜报告版本：未生成")
+        + "｜数据类型：财务数字=真实结构化数据（东财缓存）；演示注入错误仅在评测样本中明确标注；"
+          "LLM 定性内容（如有）单独标注且未经独立核验"
+    )
+
     # ---- 步骤 2：生成 + 首轮核验 ----
     if st.button("2 生成备忘录并独立核验", type="primary", key="fs_bench_run1",
                  disabled=session is not None):
@@ -196,10 +205,12 @@ def render_bench_page() -> None:
                            key="fs_bench_dl_v2docx")
         st.download_button("下载再核验报告（MD）",
                            data=report_to_markdown(r2.report).encode("utf-8"),
-                           file_name=f"verify_V2_{session.code}.md", key="fs_bench_dl_r2md")
+                           file_name=f"verify_V2_{session.code}_{session.period}.md",
+                           key="fs_bench_dl_r2md")
         st.download_button("下载再核验报告（DOCX）",
                            data=report_to_docx_bytes(r2.report),
-                           file_name=f"verify_V2_{session.code}.docx", key="fs_bench_dl_r2docx")
+                           file_name=f"verify_V2_{session.code}_{session.period}.docx",
+                           key="fs_bench_dl_r2docx")
         st.download_button("下载修订记录（MD）",
                            data=revisions_to_markdown(session).encode("utf-8"),
                            file_name=f"revisions_{session.code}_{session.period}.md",
@@ -212,4 +223,5 @@ def render_bench_page() -> None:
     st.divider()
     st.download_button("下载首轮核验报告（MD）",
                        data=report_to_markdown(r1.report).encode("utf-8"),
-                       file_name=f"verify_V1_{session.code}.md", key="fs_bench_dl_r1md")
+                       file_name=f"verify_V1_{session.code}_{session.period}.md",
+                       key="fs_bench_dl_r1md")

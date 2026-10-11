@@ -65,7 +65,7 @@ _STATUS_WORDS = {
 
 # 定性断言关键词（V5 保守启发式）
 _QUALITATIVE_KEYWORDS = ("竞争壁垒", "行业领先", "龙头", "核心优势", "竞争优势",
-                         "护城河", "必将", "确定性高", "显著优于", "市场第一")
+                         "优势显著", "护城河", "必将", "确定性高", "显著优于", "市场第一")
 
 
 @dataclass
@@ -148,7 +148,8 @@ def extract_claims(fragments: list[Fragment]) -> ClaimSet:
     for frag in fragments:
         for sentence in _split_sentences(frag.text):
             evid = re.search(r"\[(E-[A-Z0-9-]+)\]", sentence)
-            period, basis = _parse_period(sentence)
+            # 期间解析前剥离证据 ID（其中的 2024Q4 等标签不是期间声明）
+            period, basis = _parse_period(re.sub(r"\[E-[A-Z0-9-]+\]", " ", sentence))
 
             # ---- 同比特殊状态词声明（如"净利润由盈转亏"）----
             for word, status in _STATUS_WORDS.items():

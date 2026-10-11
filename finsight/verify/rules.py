@@ -186,6 +186,7 @@ def verify_numeric(claim: Claim, snap: ReferenceSnapshot,
                 result.diff_reason = (f"期间标签 {claim.period} 未注明单季/累计口径，"
                                       f"数值与{result.ref_basis}一致，但两种读法均有可能")
                 result.limitations.append(f"{both}；建议报告明确标注口径后复核")
+                _evidence_check(result, claim, snap, snapshot_values)
             else:
                 result.status = "pass"
                 result.basis_detail = (f"参考同比 {ref_value * 100:+.2f}%（{result.ref_basis}），"
