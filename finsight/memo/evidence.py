@@ -251,12 +251,20 @@ def build_evidence_book(code: str, std_income, std_balance, std_cashflow,
     # ---- 风险信号证据（复用规则引擎）----
     analysis = evaluate_available(std_income, std_cashflow, std_balance, company=code)
     for s in analysis.signals:
+        # 口径标注：使用信号引擎实际输出（R1/R2/R3 的 metrics["口径"]；
+        # R4 无该键，其营业收入对照固定为累计口径），不统一假设。
+        raw_basis = s.metrics.get("口径")
+        if not raw_basis:
+            raw_basis = "累计" if any("（累计口径）" in k for k in s.metrics) else ""
+        basis_label = ("单季口径" if "单季" in str(raw_basis)
+                       else "累计口径" if "累计" in str(raw_basis) else "口径未标注")
+        derivation = f"{s.period}（{basis_label}）：{s.condition}"
         book.add(Evidence(
             eid=f"E-SIG-{s.rule_id}-{s.period}", label=f"风险信号 {s.rule_id} {s.name}（{s.period}）",
             statement="derived", source_field="规则引擎",
             report_date=f"{s.report_date:%Y-%m-%d}" if not pd.isna(s.report_date) else "",
             value=None, unit="-", basis="规则触发（risk_hint）",
-            derivation=s.condition, note=f"级别 {s.level}；{s.name}",
+            derivation=derivation, note=f"级别 {s.level}；口径 {basis_label}；{s.name}",
         ))
     book.snapshot["signals_high"] = sum(1 for s in analysis.signals if s.level == "high")
     book.snapshot["signals_medium"] = sum(1 for s in analysis.signals if s.level == "medium")
