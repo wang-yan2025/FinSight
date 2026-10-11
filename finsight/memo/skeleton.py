@@ -157,9 +157,9 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
             e = ev.get(f"E-{prefix}-{tag}")
             if e is None:
                 continue
-            unit_suffix = e.unit if e.unit in ("次", "倍") else ""
+            # 次周转型指标的 _fmt 已含单位后缀，不再重复追加
             status_suffix = _status_cn(e.note)
-            lines.append(f"- {e.label}：{_fmt(e.value, e.unit)}{unit_suffix}{status_suffix} [{e.eid}]")
+            lines.append(f"- {e.label}：{_fmt(e.value, e.unit)}{status_suffix} [{e.eid}]")
         if lines:
             financials.facts.append(f"**{group_name}**")
             financials.facts.extend(lines)
