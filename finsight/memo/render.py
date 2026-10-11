@@ -8,6 +8,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
+from finsight.audit import audit_event
 from finsight.memo.llm import LLM_PROVENANCE_NOTE
 from finsight.memo.skeleton import DISCLAIMER, InvestmentMemo
 
@@ -46,6 +47,9 @@ def memo_to_markdown(memo: InvestmentMemo) -> str:
     lines.append("---")
     lines.append(f"**免责声明**：{DISCLAIMER}")
     lines.append("")
+    audit_event("export_memo", format="markdown", target=memo.code,
+                period=memo.period, sections=len(memo.sections),
+                chars=len("\n".join(lines)))
     return "\n".join(lines)
 
 
@@ -96,4 +100,7 @@ def memo_to_docx_bytes(memo: InvestmentMemo) -> bytes:
 
     buf = io.BytesIO()
     doc.save(buf)
-    return buf.getvalue()
+    data = buf.getvalue()
+    audit_event("export_memo", format="docx", target=memo.code,
+                period=memo.period, sections=len(memo.sections), bytes=len(data))
+    return data

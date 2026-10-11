@@ -5,6 +5,7 @@ __pycache__/
 venv/
 data/cache/*
 !data/cache/.gitkeep
+data/logs/
 .streamlit/secrets.toml
 .env
 *.log

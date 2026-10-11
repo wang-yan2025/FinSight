@@ -1,0 +1,18 @@
+{
+  "_说明": "离线演示样本清单：哈希守卫（不匹配即拒绝执行）。来源与用途见 docs/REPRODUCE.md。",
+  "fixtures": {
+    "SH600519_balance_sample.csv": {
+      "sha256": "e884a1c6c4c65167d1a2637834fb02f62f4b08ed1a74be2adaf6be040ca22c88",
+      "bytes": 1797
+    },
+    "SH600519_cashflow_sample.csv": {
+      "sha256": "20c590518483171286c2cf1c77958adaf724a97bb62ef4329b304246e68e5ff3",
+      "bytes": 530
+    },
+    "SH600519_income_sample.csv": {
+      "sha256": "8fc5e5339834f12655c43a74221befea2ce989388d814a144efb304826110dde",
+      "bytes": 1253
+    }
+  },
+  "eval_samples_sha256": "1abb2e02c75107ef64f9fa8fae1d7ca1ae403753b091bd5c48d82fd2f6c9d6b8"
+}

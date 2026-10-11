@@ -9,12 +9,14 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Callable
 
 import pandas as pd
 
+from finsight.audit import audit_event, audit_fail
 from finsight.config import CACHE_DIR, CACHE_TTL_HOURS, ensure_dirs
 from finsight.datasources.symbols import to_em_symbol
 
@@ -54,18 +56,30 @@ def fetch_statement(code: str, kind: str, refresh: bool = False) -> pd.DataFrame
     path = _cache_path(em_symbol, kind)
 
     if not refresh and path.exists() and _cache_age_hours(path) < CACHE_TTL_HOURS:
+        audit_event("data_cache_read", kind=kind, cache_file=path.name,
+                    cache_age_hours=round(_cache_age_hours(path), 2))
         logger.info("读取缓存 %s", path.name)
         return pd.read_csv(path, encoding="utf-8-sig")
 
+    if os.environ.get("FINSIGHT_OFFLINE") == "1":
+        # 离线模式硬守卫：禁止任何联网取数尝试
+        raise RuntimeError(f"离线模式（FINSIGHT_OFFLINE=1）：{em_symbol} {KIND_CN[kind]} "
+                           "无新鲜缓存，禁止联网取数；请提供本地数据样本")
+
+    audit_event("data_fetch_attempt", kind=kind, refresh=refresh,
+                cache_exists=path.exists())
     fetcher = _akshare_fetchers()[kind]
     try:
         df = fetcher(symbol=em_symbol)
-    except Exception:
+    except Exception as exc:
+        audit_fail("data_fetch_failed", exc, kind=kind)
         if path.exists():
             logger.warning(
                 "拉取 %s %s 失败，回退到 %.1f 小时前的过期缓存",
                 em_symbol, KIND_CN[kind], _cache_age_hours(path),
             )
+            audit_event("data_cache_fallback", kind=kind,
+                        cache_age_hours=round(_cache_age_hours(path), 2))
             return pd.read_csv(path, encoding="utf-8-sig")
         raise
 
@@ -73,6 +87,7 @@ def fetch_statement(code: str, kind: str, refresh: bool = False) -> pd.DataFrame
         raise RuntimeError(f"{em_symbol} {KIND_CN[kind]} 返回空数据（接口异常或代码不存在）")
 
     df.to_csv(path, index=False, encoding="utf-8-sig")
+    audit_event("data_fetch_ok", kind=kind, rows=len(df), cache_file=path.name)
     logger.info("已拉取并缓存 %s %s：%d 期", em_symbol, KIND_CN[kind], len(df))
     return df
 

@@ -8,6 +8,7 @@ from docx import Document
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
+from finsight.audit import audit_event
 from finsight.verify.rules import STATUS_CN, VerificationReportData
 
 VERIFY_DISCLAIMER = (
@@ -93,6 +94,8 @@ def report_to_markdown(report: VerificationReportData) -> str:
     lines.append("")
     lines.append("---")
     lines.append(f"**声明**：{VERIFY_DISCLAIMER}")
+    audit_event("export_report", format="markdown", target=report.code,
+                results=len(report.results), chars=len("\n".join(lines)))
     return "\n".join(lines)
 
 
@@ -147,4 +150,7 @@ def report_to_docx_bytes(report: VerificationReportData) -> bytes:
 
     buf = io.BytesIO()
     doc.save(buf)
-    return buf.getvalue()
+    data = buf.getvalue()
+    audit_event("export_report", format="docx", target=report.code,
+                results=len(report.results), bytes=len(data))
+    return data

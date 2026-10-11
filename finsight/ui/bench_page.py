@@ -6,6 +6,7 @@
 """
 import streamlit as st
 
+from finsight.audit import RunLogger, use_run
 from finsight.datasources.em_statements import STATEMENT_KINDS
 from finsight.datasources.symbols import to_em_symbol
 from finsight.finance.field_mapping import standardize_statement
@@ -21,6 +22,8 @@ _CTX_KEY = "fs_bench_ctx"
 _DATA_KEY = "fs_bench_data"
 _SESSION_KEY = "fs_bench_session"
 _PICKS_KEY = "fs_bench_picks"
+_AUDIT_KEY = "fs_bench_audit"
+_EXPORTS_KEY = "fs_bench_exports"
 
 
 def _memo_period_options(data):
@@ -71,6 +74,13 @@ def render_bench_page() -> None:
                 st.session_state[_DATA_KEY] = data
                 st.session_state.pop(_SESSION_KEY, None)
                 st.session_state.pop(_PICKS_KEY, None)
+                st.session_state.pop(_EXPORTS_KEY, None)
+                old_logger = st.session_state.pop(_AUDIT_KEY, None)
+                if old_logger is not None:
+                    try:
+                        old_logger.finish("aborted", reason="重新加载数据")
+                    except Exception:
+                        pass
 
     data = st.session_state.get(_DATA_KEY)
     if not data:
@@ -79,10 +89,17 @@ def render_bench_page() -> None:
     st.markdown(f"已加载：**{to_em_symbol(data['code'])}**（"
                 + "；".join(f"{k}={v}" for k, v in data["sources"].items()) + "）")
 
-    # 上下文守卫：代码变化清空会话
+    # 上下文守卫：代码变化清空会话与日志 run
     if st.session_state.get(_CTX_KEY) != data["code"]:
+        old_logger = st.session_state.pop(_AUDIT_KEY, None)
+        if old_logger is not None:
+            try:
+                old_logger.finish("aborted", reason="切换标的，会话结束")
+            except Exception:
+                pass
         st.session_state.pop(_SESSION_KEY, None)
         st.session_state.pop(_PICKS_KEY, None)
+        st.session_state.pop(_EXPORTS_KEY, None)
         st.session_state[_CTX_KEY] = data["code"]
 
     dates, labels = _memo_period_options(data)
@@ -101,22 +118,36 @@ def render_bench_page() -> None:
           "LLM 定性内容（如有）单独标注且未经独立核验"
     )
 
-    # ---- 步骤 2：生成 + 首轮核验 ----
+    # ---- 步骤 2：生成 + 首轮核验（绑定执行日志 run；跨步骤共用同一 run_id） ----
     if st.button("2 生成备忘录并独立核验", type="primary", key="fs_bench_run1",
                  disabled=session is not None):
         with st.spinner("构建证据、生成备忘录并独立核验…"):
             em = to_em_symbol(data["code"])
+            logger = st.session_state.get(_AUDIT_KEY)
+            if logger is None:
+                logger = RunLogger(company=em, period=str(target_date)[:10],
+                                   params={"page": "投研工作台"})
+                st.session_state[_AUDIT_KEY] = logger
             try:
-                new_session = start_session(em, data["std"].get("income"),
-                                            data["std"].get("balance"),
-                                            data["std"].get("cashflow"),
-                                            sources=data["sources"],
-                                            target_date=target_date)
+                with use_run(logger):
+                    new_session = start_session(em, data["std"].get("income"),
+                                                data["std"].get("balance"),
+                                                data["std"].get("cashflow"),
+                                                sources=data["sources"],
+                                                target_date=target_date)
+                    # 首轮导出预计算（run 内一次性记录，重渲染不重复）
+                    st.session_state[_EXPORTS_KEY] = {
+                        "v1_md": new_session.versions["V1"].markdown.encode("utf-8"),
+                        "r1_md": report_to_markdown(
+                            new_session.rounds[1].report).encode("utf-8"),
+                    }
             except Exception as exc:
+                logger.fail("bench_step2", exc)
                 st.error(f"闭环初始化失败：{exc}")
                 return
             st.session_state[_SESSION_KEY] = new_session
             st.session_state[_PICKS_KEY] = []
+            st.session_state.pop(_EXPORTS_KEY, None)
             session = new_session
 
     if session is None:
@@ -130,8 +161,9 @@ def render_bench_page() -> None:
 
     with st.expander("V1 备忘录（原始版本，只读）"):
         st.markdown(session.versions["V1"].markdown[:4000])
+        exports = st.session_state.get(_EXPORTS_KEY) or {}
         st.download_button("下载 V1 备忘录（MD）",
-                           data=session.versions["V1"].markdown.encode("utf-8"),
+                           data=exports.get("v1_md", b""),
                            file_name=f"memo_V1_{session.code}_{session.period}.md",
                            key="fs_bench_dl_v1")
 
@@ -163,16 +195,28 @@ def render_bench_page() -> None:
             else:
                 st.caption("非确定性建议：不提供自动替换，请人工修订后重新核验。")
 
-    # ---- 步骤 4：生成修订稿 + 再核验 ----
+    # ---- 步骤 4：生成修订稿 + 再核验（同一 run_id；导出预计算一次避免重渲染重复日志） ----
     have_v2 = "V2" in session.versions
     if st.button("3 生成修订稿并再核验", type="primary", key="fs_bench_revise",
                  disabled=have_v2 or not picks):
         with st.spinner("应用已采纳修订（生成 V2）并独立再核验…"):
+            logger = st.session_state.get(_AUDIT_KEY)
             try:
-                session, _child = revise(session, picks)
+                if logger is not None:
+                    with use_run(logger):
+                        session, _child = revise(session, picks)
+                        exports = _build_exports(session)
+                else:
+                    session, _child = revise(session, picks)
+                    exports = _build_exports(session)
+                st.session_state[_EXPORTS_KEY] = exports
             except Exception as exc:
+                if logger is not None:
+                    logger.fail("bench_step3", exc)
                 st.error(f"修订/再核验失败：{exc}")
                 return
+            if logger is not None:
+                logger.finish("ok", versions=list(session.versions))
         st.session_state[_SESSION_KEY] = session
         st.rerun()
 
@@ -195,33 +239,50 @@ def render_bench_page() -> None:
                     continue
                 st.write(f"- `{item.cid}`：{item.round1_status} → {item.round2_status}"
                          f"（{item.outcome}）{item.note}")
+        exports = st.session_state.get(_EXPORTS_KEY) or {}
         st.download_button("下载 V2 修订稿（MD）",
-                           data=session.versions["V2"].markdown.encode("utf-8"),
+                           data=exports.get("v2_md", b""),
                            file_name=f"memo_V2_{session.code}_{session.period}.md",
                            key="fs_bench_dl_v2md")
         st.download_button("下载 V2 修订稿（DOCX）",
-                           data=memo_to_docx_bytes(session.versions["V2"].memo),
+                           data=exports.get("v2_docx", b""),
                            file_name=f"memo_V2_{session.code}_{session.period}.docx",
                            key="fs_bench_dl_v2docx")
         st.download_button("下载再核验报告（MD）",
-                           data=report_to_markdown(r2.report).encode("utf-8"),
+                           data=exports.get("r2_md", b""),
                            file_name=f"verify_V2_{session.code}_{session.period}.md",
                            key="fs_bench_dl_r2md")
         st.download_button("下载再核验报告（DOCX）",
-                           data=report_to_docx_bytes(r2.report),
+                           data=exports.get("r2_docx", b""),
                            file_name=f"verify_V2_{session.code}_{session.period}.docx",
                            key="fs_bench_dl_r2docx")
         st.download_button("下载修订记录（MD）",
-                           data=revisions_to_markdown(session).encode("utf-8"),
+                           data=exports.get("revisions_md", b""),
                            file_name=f"revisions_{session.code}_{session.period}.md",
                            key="fs_bench_dl_rev")
         st.download_button("下载前后对比摘要（MD）",
-                           data=comparison_to_markdown(session).encode("utf-8"),
+                           data=exports.get("comparison_md", b""),
                            file_name=f"comparison_{session.code}_{session.period}.md",
                            key="fs_bench_dl_cmp")
 
     st.divider()
+    exports = st.session_state.get(_EXPORTS_KEY) or {}
     st.download_button("下载首轮核验报告（MD）",
-                       data=report_to_markdown(r1.report).encode("utf-8"),
+                       data=exports.get("r1_md", b""),
                        file_name=f"verify_V1_{session.code}_{session.period}.md",
                        key="fs_bench_dl_r1md")
+
+
+def _build_exports(session) -> dict:
+    """一次性预计算 8 个导出内容（在活动 run 内调用，避免重渲染重复日志）。"""
+    r1, r2 = session.rounds[1], session.rounds[2]
+    return {
+        "v1_md": session.versions["V1"].markdown.encode("utf-8"),
+        "v2_md": session.versions["V2"].markdown.encode("utf-8"),
+        "v2_docx": memo_to_docx_bytes(session.versions["V2"].memo),
+        "r1_md": report_to_markdown(r1.report).encode("utf-8"),
+        "r2_md": report_to_markdown(r2.report).encode("utf-8"),
+        "r2_docx": report_to_docx_bytes(r2.report),
+        "revisions_md": revisions_to_markdown(session).encode("utf-8"),
+        "comparison_md": comparison_to_markdown(session).encode("utf-8"),
+    }

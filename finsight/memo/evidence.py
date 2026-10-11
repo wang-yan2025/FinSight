@@ -26,6 +26,8 @@ from finsight.finance.indicators import (
 from finsight.finance.quarterly import period_of
 from finsight.ui.signals_view import evaluate_available
 
+from finsight.audit import audit_event
+
 DATA_SOURCE = "东方财富三大报表（经 akshare，本地缓存快照）"
 
 _STATEMENT_CN = {"balance": "资产负债表", "income": "利润表", "cashflow": "现金流量表"}
@@ -89,6 +91,8 @@ def _add_field_evidence(book: EvidenceBook, eid_prefix: str, label: str, stateme
                         source_field: str, date, value, unit: str, basis: str, note: str = ""):
     if value is None or pd.isna(value):
         book.missing.append(f"{label}（{_period_tag(date)}）缺失——{source_field} 无有效值")
+        audit_event("evidence_field", status="missing", metric=eid_prefix,
+                    period=_period_tag(date), source_field=source_field)
         return None
     book.add(Evidence(
         eid=f"E-{eid_prefix}-{_period_tag(date)}", label=f"{label}（{_period_tag(date)}，{basis}）",
@@ -97,6 +101,8 @@ def _add_field_evidence(book: EvidenceBook, eid_prefix: str, label: str, stateme
         derivation=f"来源字段 {source_field}（{_STATEMENT_CN.get(statement, statement)}，{basis}）",
         note=note,
     ))
+    audit_event("evidence_field", metric=eid_prefix, period=_period_tag(date),
+                source_field=source_field, value=float(value), unit=unit, basis=basis)
     return float(value)
 
 
@@ -250,6 +256,11 @@ def build_evidence_book(code: str, std_income, std_balance, std_cashflow,
 
     # ---- 风险信号证据（复用规则引擎）----
     analysis = evaluate_available(std_income, std_cashflow, std_balance, company=code)
+    audit_event("risk_rules_executed",
+                signals_total=len(analysis.signals),
+                signals_high=sum(1 for s in analysis.signals if s.level == "high"),
+                unevaluated=len(analysis.unevaluated),
+                rules="R1-R4")
     for s in analysis.signals:
         # 口径标注：使用信号引擎实际输出（R1/R2/R3 的 metrics["口径"]；
         # R4 无该键，其营业收入对照固定为累计口径），不统一假设。

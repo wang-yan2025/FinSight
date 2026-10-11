@@ -17,6 +17,8 @@ from finsight.verify.rules import VerificationReportData, verify_claim_set
 from finsight.workflow.models import ReportVersion, RoundResult, WorkflowSession
 from finsight.workflow.revision import apply_proposals, generate_proposals
 
+from finsight.audit import audit_event, audit_fail
+
 
 # ---------------- 备忘录 ↔ 片段 / 证据登记（供核验与修订共用） ----------------
 
@@ -69,9 +71,13 @@ def start_session(code: str, std_income, std_balance, std_cashflow,
     v1 = ReportVersion(vid="V1", memo=memo, markdown=memo_to_markdown(memo),
                        created_reason="初始生成（确定性骨架）")
     session.versions[v1.vid] = v1
+    audit_event("memo_generated", version="V1", period=memo.period,
+                evidence_count=len(book.evidences), sections=len(memo.sections))
     session = verify_version(session, v1, snap, round_id=1)
     session.proposals = generate_proposals(session.rounds[1],
                                            memo_evidence_values(memo), memo)
+    audit_event("proposals_generated", count=len(session.proposals),
+                deterministic=sum(1 for p in session.proposals if p.deterministic))
     return session
 
 
@@ -86,6 +92,9 @@ def verify_version(session: WorkflowSession, version: ReportVersion,
     session.rounds[round_id] = RoundResult(round_id=round_id, vid=version.vid,
                                            report=report, claims=claim_set,
                                            fingerprint=snap.fingerprint)
+    audit_event("verification_round", round_id=round_id, vid=version.vid,
+                snapshot_fingerprint=snap.fingerprint, claims=len(claim_set.claims),
+                counts=report.counts(), rules="V1-V5")
     return session
 
 
@@ -94,9 +103,13 @@ def revise(session: WorkflowSession, accepted_pids: list[str]) -> tuple[Workflow
     parent = session.versions[session.current_vid]
     for p in session.proposals:
         p.accepted = p.pid in accepted_pids
+    audit_event("revision_confirmed", accepted=len(accepted_pids), pids=accepted_pids)
     child, applied = apply_proposals(parent, session.proposals)
     session.versions[child.vid] = child
     session.applied = applied
+    audit_event("revision_applied", new_version=child.vid, parent=parent.vid,
+                applied_count=sum(1 for a in applied if a.applied),
+                skipped=[{"pid": a.pid, "note": a.note} for a in applied if not a.applied])
     session = verify_version(session, child, session.snapshot, round_id=len(session.rounds) + 1)
     return session, child
 
