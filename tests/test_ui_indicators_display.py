@@ -136,7 +136,7 @@ def test_indicator_display_zero_denominator_notes():
     })
     df, notes = build_indicator_display(inc, None, None)
     assert df.iloc[1]["毛利率（累计）"] == "—"   # 倒序：0 收入期为第一行
-    assert any("毛利率" in n and "未计算" in n for n in notes)
+    assert any("毛利率" in n for n in notes)
 
 
 def test_indicator_display_income_missing_all():

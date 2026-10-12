@@ -9,7 +9,7 @@ from finsight.datasources import em_statements
 from finsight.finance.field_mapping import REPORT_DATE_FIELD
 
 APP = Path(__file__).resolve().parent.parent / "app.py"
-BENCH_PAGE = "投研工作台（闭环演示）"
+BENCH_PAGE = "智能投研工作台"
 
 
 def qd(year, quarter):
@@ -55,6 +55,7 @@ RAW_BY_KIND = {
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
+    monkeypatch.setenv("FINSIGHT_IGNORE_ENV_FILE", "1")
     for var in ("FINSIGHT_LLM_API_KEY", "FINSIGHT_LLM_BASE_URL", "FINSIGHT_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(em_statements, "fetch_statement",
@@ -74,7 +75,7 @@ def _all_text(at) -> str:
 def _at():
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
-    at.radio[0].set_value(BENCH_PAGE)
+    at.button(key=f"nav_{BENCH_PAGE}").click()
     at.run()
     return at
 

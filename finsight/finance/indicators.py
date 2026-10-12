@@ -325,16 +325,25 @@ def _turnover_series(std_balance: pd.DataFrame, std_flow: pd.DataFrame,
             out_rows.append(rec)
             continue
         year, quarter = p
+        begin_fallback = False
         if basis == "single_quarter":
             flow = flows.get(p)
             if flow is not None:
                 rec["flow"] = flow
             begin = (balances.get((year, quarter - 1)) if quarter > 1
                      else balances.get((year - 1, 4)))
+            # 期初余额回退：Q1 无上年年报时，用当年 Q1 自身余额近似
+            if begin is None and quarter == 1:
+                begin = balances.get((year, 1))
+                begin_fallback = begin is not None
             begin_missing_reason = "期初余额缺失（需上一季度末余额；Q1 需上一年年报期末余额）"
         else:
             flow = flows.get(p)
             begin = balances.get((year - 1, 4))  # 年初余额 = 上一年年报期末
+            # 年初余额回退：无上年年报时，用当年 Q1 期末余额近似
+            if begin is None:
+                begin = balances.get((year, 1))
+                begin_fallback = begin is not None
             begin_missing_reason = "期初余额缺失（年初余额需上一年年报期末余额）"
         end = balances.get(p)
         if flow is None:
@@ -352,6 +361,9 @@ def _turnover_series(std_balance: pd.DataFrame, std_flow: pd.DataFrame,
                 rec["reason"] = "平均余额非正或流量为负，口径不成立"
             else:
                 rec["value"] = value
+                if begin_fallback:
+                    rec["reason"] = ""  # 有值，清空错误标记
+                    rec["caveat"] = "期初余额使用当年 Q1 近似（上年年报数据不可用）"
         out_rows.append(rec)
     return pd.DataFrame(out_rows)
 

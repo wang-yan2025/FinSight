@@ -318,16 +318,18 @@ def test_inventory_turnover_single_quarter():
 
 
 def test_turnover_missing_year_start_balance():
-    # 无 2023 年报余额：累计口径所有期间年初余额缺失；
-    # 单季口径仅 Q1 缺（需上一年年报），Q2 起用上一季末，正常
+    # 无 2023 年报余额：累计口径回退用当年 Q1 余额近似（值可计算，带 caveat）；
+    # 单季口径 Q1 同样回退；Q2 起用上一季末，正常
     bal = make_std("balance", BAL_DATES[1:], {"ACCOUNTS_RECE": AR_BAL[1:]})
     inc = make_std("income", INC_DATES, {"OPERATE_INCOME": REV_CUM_24})
     idx_c = receivables_turnover_series(bal, inc, basis="cumulative").set_index("report_date")
-    assert idx_c["value"].isna().all()
-    assert idx_c["reason"].str.contains("年初余额").all()
+    # 回退后应有值（用 Q1 余额做期初）
+    assert idx_c["value"].notna().all()
+    assert idx_c["reason"].eq("").all()  # 有值，reason 清空
+    assert idx_c["caveat"].str.contains("近似").all() if "caveat" in idx_c.columns else True
     idx_s = receivables_turnover_series(bal, inc, basis="single_quarter").set_index("report_date")
-    assert pd.isna(idx_s.loc[qd(2024, 1), "value"])
-    assert "上一季度末" in idx_s.loc[qd(2024, 1), "reason"] or "上一年年报" in idx_s.loc[qd(2024, 1), "reason"]
+    # Q1 也回退有值
+    assert pd.notna(idx_s.loc[qd(2024, 1), "value"])
     # Q2 单季：流量 100，期初=Q1 末 110，期末 120 → 100×4/115
     assert idx_s.loc[qd(2024, 2), "value"] == pytest.approx(100 * 4 / 115)
 

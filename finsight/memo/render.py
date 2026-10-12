@@ -104,3 +104,87 @@ def memo_to_docx_bytes(memo: InvestmentMemo) -> bytes:
     audit_event("export_memo", format="docx", target=memo.code,
                 period=memo.period, sections=len(memo.sections), bytes=len(data))
     return data
+
+
+# ---------------- PDF 导出（reportlab + 系统中文字体） ----------------
+
+def _pdf_cjk_font():
+    """注册系统 CJK 字体；不可用时返回 None（调用方降级为拉丁字体）。"""
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+    for name, path in (("FinSightHei", "C:/Windows/Fonts/msyh.ttc"),
+                       ("FinSightHei", "C:/Windows/Fonts/simhei.ttf"),
+                       ("FinSightHei", "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc")):
+        try:
+            pdfmetrics.registerFont(TTFont(name, path))
+            return name
+        except Exception:
+            continue
+    return None
+
+
+def memo_to_pdf_bytes(memo: InvestmentMemo) -> bytes:
+    """完整备忘录 → PDF 字节流（reportlab，中文标题/段落/证据表）。"""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (Paragraph, SimpleDocTemplate, Spacer, Table,
+                                    TableStyle)
+
+    font = _pdf_cjk_font() or "Helvetica"
+    ink = colors.HexColor("#1D2939")
+    muted = colors.HexColor("#667085")
+    line = colors.HexColor("#E4E9F2")
+    s_title = ParagraphStyle("t", fontName=font, fontSize=16, leading=22, textColor=ink,
+                             alignment=1, spaceAfter=4 * mm)
+    s_meta = ParagraphStyle("m", fontName=font, fontSize=8.5, leading=12, textColor=muted,
+                            alignment=1, spaceAfter=6 * mm)
+    s_h1 = ParagraphStyle("h1", fontName=font, fontSize=12, leading=17, textColor=ink,
+                          spaceBefore=5 * mm, spaceAfter=2.5 * mm)
+    s_body = ParagraphStyle("b", fontName=font, fontSize=9.5, leading=14.5, textColor=ink)
+    s_llm = ParagraphStyle("l", fontName=font, fontSize=9, leading=13.5,
+                           textColor=colors.HexColor("#51607A"))
+
+    def esc(t: str) -> str:
+        return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, topMargin=18 * mm, bottomMargin=18 * mm,
+                            leftMargin=16 * mm, rightMargin=16 * mm,
+                            title=f"FinSight 备忘录 {memo.code}")
+    story = [Paragraph(esc(f"买方投资备忘录（研究辅助稿）——{memo.code}"), s_title),
+             Paragraph(esc(f"生成时间：{memo.generated_at}｜目标报告期：{memo.period}"
+                           f"｜LLM 状态：{memo.llm_status}"), s_meta)]
+    for sec in memo.sections:
+        story.append(Paragraph(esc(sec.title), s_h1))
+        if sec.llm_text:
+            story.append(Paragraph(esc(_LLM_BANNER), s_llm))
+            story.append(Paragraph(esc(sec.llm_text), s_body))
+            story.append(Spacer(1, 2 * mm))
+        for fact in sec.facts:
+            story.append(Paragraph(esc(fact.strip("*").strip()), s_body))
+        if sec.key == "appendix" and memo.evidence is not None:
+            data = [["证据 ID", "内容", "值", "单位", "报告期"]]
+            for eid in memo.evidence.ids():
+                e = memo.evidence.get(eid)
+                data.append([e.eid, e.label[:28],
+                             "—" if e.value is None else f"{e.value:,.4g}",
+                             e.unit, e.report_date])
+            tbl = Table(data, colWidths=[30 * mm, 62 * mm, 30 * mm, 12 * mm, 22 * mm])
+            tbl.setStyle(TableStyle([
+                ("FONTNAME", (0, 0), (-1, -1), font),
+                ("FONTSIZE", (0, 0), (-1, -1), 7),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#EEF2F8")),
+                ("GRID", (0, 0), (-1, -1), 0.4, line),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2)]))
+            story.append(tbl)
+    story.append(Paragraph("免责声明", s_h1))
+    story.append(Paragraph(esc(DISCLAIMER), s_body))
+    doc.build(story)
+    pdf = buf.getvalue()
+    audit_event("export_memo", format="pdf", target=memo.code,
+                period=memo.period, sections=len(memo.sections), bytes=len(pdf))
+    return pdf

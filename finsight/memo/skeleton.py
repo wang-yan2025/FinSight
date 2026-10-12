@@ -146,11 +146,16 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
     summary.facts.append(f"主要不确定性：见第八节待核实清单（当前 {len(book.missing)} 项数据缺口/限制）")
     memo.sections.append(summary)
 
-    # ---- 二、公司概况（无经营材料接入，如实标注）----
+    # ---- 二、公司概况（真实基本信息 + 如实标注未接入部分）----
     company = MemoSection("company", SECTION_TITLES["company"], "llm", status="llm_pending")
+    cname = snapshot.get("company_name") or "（未获取，待补充）"
+    industry = snapshot.get("industry") or "（未获取，待补充）"
     company.facts.append(
-        "公司名称与业务材料未接入：当前数据源仅为结构化财务报表（东方财富），"
-        "公司介绍、主营业务、行业地位等信息待补充，不以财务数据推測替代。")
+        f"公司名称：{cname}｜所属行业：{industry}"
+        + ("（来源：东方财富个股信息）" if snapshot.get("company_name") else ""))
+    company.facts.append(
+        "主营业务描述、行业地位与竞争格局等经营材料未接入：当前数据源为结构化财务数据，"
+        "不以财务数据推测替代，待补充人工核实的公开材料。")
     company.facts.append(f"标的代码：{code}｜目标报告期：{period}（利润表口径）")
     memo.sections.append(company)
 

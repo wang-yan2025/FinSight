@@ -12,6 +12,8 @@ from finsight.datasources.symbols import to_em_symbol
 from finsight.finance.field_mapping import standardize_statement
 from finsight.memo.llm import LLMConfig
 from finsight.memo.render import memo_to_docx_bytes, memo_to_markdown
+from finsight.ui.components import badge, diff_card, page_header, quote, status_chip_row, stepper
+from finsight.ui.flow import STEPS, workflow_states
 from finsight.ui.view import fetch_with_source, period_label
 from finsight.verify.report import report_to_docx_bytes, report_to_markdown
 from finsight.verify.rules import STATUS_CN, STATUS_ORDER
@@ -39,48 +41,55 @@ def _memo_period_options(data):
 
 
 def render_bench_page() -> None:
-    st.subheader("投研工作台：生成 → 核验 → 修订 → 再核验 → 对比（完整闭环）")
-    st.caption("原始版本只读；修订必产新版本且逐条可追溯；两轮核验共用同一参考快照；"
-               "「通过」仅覆盖已提取声明。无 LLM 配置时确定性闭环完整可用。")
+    page_header("智能投研工作台", "生成 → 核验 → 修订 → 再核验 → 对比｜原始版本只读 · 修订可追溯 · 两轮共用同一参考快照",
+                chips=[("闭环", "五步全流程"), ("快照", "两轮一致")])
 
     cfg = LLMConfig.from_env()
-    st.caption(f"LLM：{'已配置（' + cfg.model + '）' if cfg.configured() else '未配置（基础备忘录）'}")
+    status_chip_row("模型状态",
+                    "LLM：未配置（基础备忘录，确定性闭环完整可用）" if not cfg.configured()
+                    else f"LLM：已配置（{cfg.model}）",
+                    tone="info" if cfg.configured() else "neutral")
 
-    col_code, col_load = st.columns([3, 1])
-    with col_code:
-        code = st.text_input("A股股票代码", placeholder="如 600519", key="fs_bench_code")
-    with col_load:
-        st.write("")
-        if st.button("1 加载数据", key="fs_bench_load"):
-            code_clean = (code or "").strip()
-            try:
-                to_em_symbol(code_clean)
-            except ValueError as exc:
-                st.error(f"股票代码无效：{exc}")
-                return
-            with st.spinner("获取三大报表（复用缓存）…"):
-                data = {"code": code_clean, "std": {}, "sources": {}, "errors": {}}
-                for kind in STATEMENT_KINDS:
-                    try:
-                        raw, source = fetch_with_source(code_clean, kind)
-                        data["std"][kind] = standardize_statement(kind, raw)
-                        data["sources"][kind] = source
-                    except Exception as exc:
-                        data["errors"][kind] = str(exc)
-                income = data["std"].get("income")
-                if income is None or income.empty:
-                    st.error("利润表不可用，无法启动闭环（至少需要利润表）。")
+    with st.container(border=True):
+        st.markdown('<div class="fs-sec-title">启动闭环</div>', unsafe_allow_html=True)
+        col_code, col_load = st.columns([3, 1])
+        with col_code:
+            code = st.text_input("A股股票代码", placeholder="如 600519", key="fs_bench_code")
+        with col_load:
+            st.write("")
+            if st.button("1 加载数据", key="fs_bench_load"):
+                code_clean = (code or "").strip()
+                try:
+                    to_em_symbol(code_clean)
+                except ValueError as exc:
+                    st.error(f"股票代码无效：{exc}")
                     return
-                st.session_state[_DATA_KEY] = data
-                st.session_state.pop(_SESSION_KEY, None)
-                st.session_state.pop(_PICKS_KEY, None)
-                st.session_state.pop(_EXPORTS_KEY, None)
-                old_logger = st.session_state.pop(_AUDIT_KEY, None)
-                if old_logger is not None:
-                    try:
-                        old_logger.finish("aborted", reason="重新加载数据")
-                    except Exception:
-                        pass
+                with st.status("读取财务数据（本地缓存优先）…", expanded=True) as status:
+                    data = {"code": code_clean, "std": {}, "sources": {}, "errors": {}}
+                    for kind in STATEMENT_KINDS:
+                        st.write(f"获取 { {'balance': '资产负债表', 'income': '利润表', 'cashflow': '现金流量表'}[kind] }…")
+                        try:
+                            raw, source = fetch_with_source(code_clean, kind)
+                            data["std"][kind] = standardize_statement(kind, raw)
+                            data["sources"][kind] = source
+                        except Exception as exc:
+                            data["errors"][kind] = str(exc)
+                    income = data["std"].get("income")
+                    if income is None or income.empty:
+                        st.error("利润表不可用，无法启动闭环（至少需要利润表）。")
+                        return
+                    st.write(f"完成：{len(data['std'])}/3 张报表就绪。")
+                    status.update(label="财务数据就绪", state="complete", expanded=False)
+                    st.session_state[_DATA_KEY] = data
+                    st.session_state.pop(_SESSION_KEY, None)
+                    st.session_state.pop(_PICKS_KEY, None)
+                    st.session_state.pop(_EXPORTS_KEY, None)
+                    old_logger = st.session_state.pop(_AUDIT_KEY, None)
+                    if old_logger is not None:
+                        try:
+                            old_logger.finish("aborted", reason="重新加载数据")
+                        except Exception:
+                            pass
 
     data = st.session_state.get(_DATA_KEY)
     if not data:
@@ -109,6 +118,13 @@ def render_bench_page() -> None:
 
     session = st.session_state.get(_SESSION_KEY)
 
+    # ---- 工作流步骤条（状态由业务事实推导）----
+    stepper(STEPS, workflow_states(
+        data_loaded=True,
+        has_v1=session is not None,
+        has_round1=session is not None and 1 in session.rounds,
+        has_round2=session is not None and 2 in session.rounds))
+
     # ---- 会话信息面板（股票/期间/快照/版本一目了然）----
     st.caption(
         f"当前标的：**{to_em_symbol(data['code'])}**｜目标报告期：**{labels.get(target_date, str(target_date)[:10])}**"
@@ -121,7 +137,7 @@ def render_bench_page() -> None:
     # ---- 步骤 2：生成 + 首轮核验（绑定执行日志 run；跨步骤共用同一 run_id） ----
     if st.button("2 生成备忘录并独立核验", type="primary", key="fs_bench_run1",
                  disabled=session is not None):
-        with st.spinner("构建证据、生成备忘录并独立核验…"):
+        with st.status("构建证据、生成备忘录并独立核验…", expanded=True) as status:
             em = to_em_symbol(data["code"])
             logger = st.session_state.get(_AUDIT_KEY)
             if logger is None:
@@ -130,11 +146,13 @@ def render_bench_page() -> None:
                 st.session_state[_AUDIT_KEY] = logger
             try:
                 with use_run(logger):
+                    st.write("独立重算参考快照、构建证据与备忘录骨架（V1）…")
                     new_session = start_session(em, data["std"].get("income"),
                                                 data["std"].get("balance"),
                                                 data["std"].get("cashflow"),
                                                 sources=data["sources"],
                                                 target_date=target_date)
+                    st.write(f"首轮核验完成：{new_session.rounds[1].report.claim_count} 条声明。")
                     # 首轮导出预计算（run 内一次性记录，重渲染不重复）
                     st.session_state[_EXPORTS_KEY] = {
                         "v1_md": new_session.versions["V1"].markdown.encode("utf-8"),
@@ -145,6 +163,7 @@ def render_bench_page() -> None:
                 logger.fail("bench_step2", exc)
                 st.error(f"闭环初始化失败：{exc}")
                 return
+            status.update(label="V1 生成并完成首轮核验", state="complete", expanded=False)
             st.session_state[_SESSION_KEY] = new_session
             st.session_state[_PICKS_KEY] = []
             st.session_state.pop(_EXPORTS_KEY, None)
@@ -199,11 +218,12 @@ def render_bench_page() -> None:
     have_v2 = "V2" in session.versions
     if st.button("3 生成修订稿并再核验", type="primary", key="fs_bench_revise",
                  disabled=have_v2 or not picks):
-        with st.spinner("应用已采纳修订（生成 V2）并独立再核验…"):
+        with st.status("应用已采纳修订（生成 V2）并独立再核验…", expanded=True) as status:
             logger = st.session_state.get(_AUDIT_KEY)
             try:
                 if logger is not None:
                     with use_run(logger):
+                        st.write(f"应用 {len(picks)} 条已确认修订，生成 V2…")
                         session, _child = revise(session, picks)
                         exports = _build_exports(session)
                 else:
@@ -217,6 +237,7 @@ def render_bench_page() -> None:
                 return
             if logger is not None:
                 logger.finish("ok", versions=list(session.versions))
+            status.update(label="V2 生成并完成再核验", state="complete", expanded=False)
         st.session_state[_SESSION_KEY] = session
         st.rerun()
 
@@ -233,6 +254,7 @@ def render_bench_page() -> None:
             col_a.metric("已确认修复", len(cmp_report.outcomes("fixed")))
             col_b.metric("口径澄清后通过", len(cmp_report.outcomes("clarified")))
             col_c.metric("新引入错误", len(cmp_report.outcomes("regression")))
+            _render_fixed_diff_card(session, cmp_report)
         with st.expander("逐条对比（原文 → 首轮 → 修订 → 再核验）"):
             for item in cmp_report.items:
                 if item.outcome == "unchanged":
@@ -286,3 +308,41 @@ def _build_exports(session) -> dict:
         "revisions_md": revisions_to_markdown(session).encode("utf-8"),
         "comparison_md": comparison_to_markdown(session).encode("utf-8"),
     }
+
+
+def _render_fixed_diff_card(session, cmp_report) -> None:
+    """修订前后对比卡：左（原文+错误）→ 中（修订+证据）→ 右（修订后+再核验）。
+
+    数据全部来自真实闭环结果（round1/建议/round2）；无已确认修复时如实说明。
+    """
+    from finsight.ui.components import esc
+    fixed = cmp_report.outcomes("fixed")
+    if not fixed:
+        clarified = cmp_report.outcomes("clarified")
+        if clarified:
+            st.caption("对比卡：本轮无「已确认修复」项，有口径澄清项（见上方计数与逐条对比）。")
+        else:
+            st.caption("对比卡：本轮无已确认修复项（未采纳或无确定性错误）。")
+        return
+    item = fixed[0]
+    claim1 = next((c for c in session.rounds[1].claims.claims if c.cid == item.cid), None)
+    prop = next((p for p in session.proposals if p.cid == item.cid), None)
+    if claim1 is None or prop is None or not prop.new_sentence:
+        st.caption("对比卡：该修复项缺少可展示的建议详情，见逐条对比。")
+        return
+    r1_res = next((x for x in session.rounds[1].report.results if x.cid == item.cid), None)
+    left = (quote(claim1.text)
+            + f'<div style="margin-top:6px">{badge(claim1.display or "", "fail")} '
+            + badge("首轮：不通过", "fail") + "</div>"
+            + (f'<div class="fs-srcnote">原因：{esc(r1_res.diff_reason)}</div>' if r1_res else ""))
+    mid = (f'<div style="margin-bottom:6px">{badge(prop.kind, "info")} '
+           f'{badge("人工已确认", "pass")}</div>'
+           + quote(f"{prop.old_display} → {prop.new_display}")
+           + f'<div class="fs-srcnote">参考依据：{esc(prop.ref_display)}'
+           + (f'｜证据 <span class="fs-eid">{esc(prop.evidence_id)}</span>' if prop.evidence_id else "")
+           + "</div>")
+    right = (quote(prop.new_sentence, ok=True)
+             + f'<div style="margin-top:6px">{badge(prop.new_display or "", "pass")} '
+             + badge("再核验：通过", "pass") + "</div>"
+             + '<div class="fs-srcnote">独立重新提取并比对（V1–V5 重跑）</div>')
+    diff_card("① 原报告（V1）", left, "② 受控修订", mid, "③ 修订稿（V2）", right)

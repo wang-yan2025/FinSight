@@ -134,6 +134,12 @@ def build_number_allowlist(memo: InvestmentMemo) -> set[str]:
         v = float(e.value)
         allow.update({f"{v:g}", f"{v:,.0f}", f"{v:.1%}", f"{v:+.1%}", f"{v:.2%}", f"{v:+.2%}",
                       f"{v:.2f}", f"{abs(v):.1%}", f"{abs(v):.2%}"})
+        # 等价简写格式：元值 → 亿元/万元口语形式；比率 → 整数百分数
+        for scale in (1e8, 1e4):
+            s = v / scale
+            if abs(s) >= 0.01:
+                allow.update({f"{s:g}", f"{s:,.0f}", f"{s:.1f}", f"{s:.2f}", f"{abs(s):g}"})
+        allow.update({f"{v * 100:.0f}", f"{abs(v) * 100:.0f}", f"{v * 100:.1f}"})
         year = e.report_date[:4]
         if year:
             allow.add(year)

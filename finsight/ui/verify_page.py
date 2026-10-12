@@ -1,18 +1,14 @@
-"""研究报告核验页面（方向5 · 阶段6 MVP）。
+"""研究报告核验页面（方向5）：验证控制台（UI 升级版）。
 
-入口 A：核验本会话生成的 FinSight 投资备忘录（含正文事实与证据引用）。
-入口 B：上传 Markdown / DOCX 研究报告。
-
-- 参考数据独立重算（verify.reference），不采信报告内容；
-- 核验仅在按钮分支执行，重渲染不重复核验；
-- 切换模式/股票/文件/期间后旧结果自动失效；
-- 核验失败不修改原始报告。
+状态概览（数字卡 + 分布条）→ 按状态筛选 → 逐条「原文 vs 参考」对照。
+业务逻辑、widget key 与断言锚点文本不变。
 """
 import streamlit as st
 
 from finsight.datasources.em_statements import STATEMENT_KINDS
 from finsight.datasources.symbols import to_em_symbol
 from finsight.finance.field_mapping import standardize_statement
+from finsight.ui.components import badge, dist_bar, kpi_cards, page_header
 from finsight.ui.view import fetch_with_source
 from finsight.verify.claims import extract_claims
 from finsight.verify.extract import DocumentError, extract_fragments
@@ -25,6 +21,9 @@ _RESULT_KEY = "fs_verify_result"
 _CTX_KEY = "fs_verify_ctx"
 MEMO_KEY = "fs_memo_result"      # 阶段5 备忘录（只读复用）
 MEMO_DATA_KEY = "fs_memo_data"
+
+_STATUS_TONE = {"pass": "pass", "fail": "fail", "insufficient_evidence": "neutral",
+                "unable_to_verify": "neutral", "needs_review": "warn"}
 
 
 def _memo_evidence_values(memo) -> dict | None:
@@ -57,11 +56,7 @@ def _memo_fragments(memo):
 
 
 def render_verify_page() -> None:
-    st.subheader("研究报告独立核验（方向5）")
-    st.caption("参考值由标准化财务数据 + 确定性引擎独立重算，不采信报告自身内容；"
-               "「证据不足」≠虚假，「无法核验」≠通过；定性结论需人工复核。"
-               "「通过」仅覆盖成功提取并核验的声明，不等于整份报告正确；"
-               "参考数据与备忘录同源（东方财富），为计算路径独立比对，非跨数据源交叉验证。")
+    page_header("独立报告核验", "验证控制台｜参考值独立重算（V1–V5）· 不采信报告自身内容 · 通过仅覆盖已提取声明")
 
     mode = st.radio("核验入口", ["核验本会话备忘录", "上传报告文件（MD/DOCX）"],
                     key="fs_verify_mode", horizontal=True)
@@ -85,7 +80,7 @@ def render_verify_page() -> None:
     memo = st.session_state.get(MEMO_KEY)
     if mode == "核验本会话备忘录":
         if memo is None:
-            st.info("当前会话尚未生成投资备忘录：请先在「买方备忘录（方向6）」页生成，"
+            st.info("当前会话尚未生成投资备忘录：请先在「投资备忘录」页生成，"
                     "或改用文件上传入口。")
             return
         st.caption(f"将核验备忘录：{memo.code}｜目标报告期 {memo.period}｜生成于 {memo.generated_at}")
@@ -118,7 +113,8 @@ def render_verify_page() -> None:
         except ValueError as exc:
             st.error(f"股票代码无效：{exc}")
             return
-        with st.spinner("正在获取参考财务数据并独立重算（复用缓存，过期才联网）…"):
+        with st.status("正在独立核验…", expanded=True) as status:
+            st.write("获取参考财务数据（本地缓存优先）…")
             std, sources, errors = {}, {}, {}
             for kind in STATEMENT_KINDS:
                 try:
@@ -132,7 +128,8 @@ def render_verify_page() -> None:
                 st.error("利润表不可用：无法构建核验参考数据（至少需要利润表）。"
                          + (f" 错误：{errors.get('income', '')}" if errors.get("income") else ""))
                 return
-            snap = build_reference_snapshot(to_em_symbol(code_clean), std.get("income"),
+            st.write("构建参考快照并独立重算（V1–V5）…")
+            snap = build_reference_snapshot(to_em_symbol(code_clean), income_std,
                                             std.get("balance"), std.get("cashflow"),
                                             sources=sources)
             if mode == "核验本会话备忘录":
@@ -148,11 +145,13 @@ def render_verify_page() -> None:
                 claim_set, snap, snapshot_values=snapshot_values,
                 fragments_text="\n".join(f.text for f in fragments),
                 target_desc=target_desc)
+            kind_cn = {"balance": "资产负债表", "income": "利润表", "cashflow": "现金流量表"}
             for kind, err in errors.items():
                 report_data.source_findings.append(
-                    f"{ {'balance': '资产负债表', 'income': '利润表', 'cashflow': '现金流量表'}[kind] }"
-                    f" 获取失败（{err}）：依赖该表的声明将无法核验")
+                    f"{kind_cn[kind]} 获取失败（{err}）：依赖该表的声明将无法核验")
             st.session_state[_RESULT_KEY] = (report_data, claim_set, snap.fingerprint)
+            st.write(f"完成：提取 {report_data.claim_count} 条声明。")
+            status.update(label="核验完成", state="complete", expanded=False)
 
     result = st.session_state.get(_RESULT_KEY)
     if not result:
@@ -169,7 +168,17 @@ def render_verify_page() -> None:
     if claim_set.extraction_notes:
         for note in claim_set.extraction_notes:
             st.caption(f"提取说明：{note}")
-    st.caption(f"参考数据快照指纹：{fingerprint}（用于识别报告生成后数据是否变化）")
+    st.caption(f"参考数据快照指纹：{fingerprint}（用于识别报告生成后数据是否变化）｜"
+               "「通过」仅覆盖成功提取并核验的声明；参考数据与备忘录同源，为独立计算路径比对")
+
+    # ---- 状态概览：数字卡 + 分布条（真实计数） ----
+    kpi_cards([{ "label": STATUS_CN[s], "value": counts.get(s, 0), "unit": "条",
+                 "badge": ({"text": "重点" if s in ("fail", "needs_review") else "OK",
+                            "tone": _STATUS_TONE[s]} if counts.get(s) else None),
+                 "sub": None}
+                for s in ("pass", "fail", "insufficient_evidence", "unable_to_verify",
+                          "needs_review") if counts.get(s)])
+    dist_bar(counts)
 
     filter_status = st.multiselect("按状态筛选", STATUS_ORDER, default=STATUS_ORDER,
                                    format_func=lambda s: STATUS_CN[s], key="fs_verify_filter")
@@ -177,20 +186,29 @@ def render_verify_page() -> None:
     for r in shown:
         title = f"{STATUS_CN[r.status]}｜{r.cid}｜{r.location}"
         with st.expander(title):
-            st.write(f"**原文**：{r.claim_text}")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**声称值**：{r.claimed_display or '—'}")
-            with col2:
-                st.write(f"**参考值**：{r.reference_display or '—'}"
-                         + (f"（{r.ref_period}，{r.ref_basis}）" if r.ref_period else ""))
+            st.markdown(badge(STATUS_CN[r.status], _STATUS_TONE[r.status])
+                        + (f'　<span class="fs-eid">{r.cid}</span>' if r.cid else ""),
+                        unsafe_allow_html=True)
+            col_src, col_ref = st.columns(2)
+            with col_src:
+                st.markdown("**报告原文**")
+                st.write(r.claim_text)
+                if r.claimed_display:
+                    st.caption(f"声称值：{r.claimed_display}")
+            with col_ref:
+                st.markdown("**独立参考数据**")
+                if r.reference_display:
+                    st.write(f"{r.reference_display}"
+                             + (f"（{r.ref_period}，{r.ref_basis}）" if r.ref_period else ""))
+                else:
+                    st.write("—")
+                st.caption(f"来源：{r.ref_source}")
             if r.difference:
                 st.write(f"**差异**：{r.difference}")
             if r.diff_reason:
                 st.write(f"**原因**：{r.diff_reason}")
             if r.basis_detail:
                 st.write(f"**核验依据**：{r.basis_detail}")
-                st.caption(f"参考来源：{r.ref_source}")
             if r.suggestion:
                 st.write(f"**建议修订方向**：{r.suggestion}")
             for lim in r.limitations:

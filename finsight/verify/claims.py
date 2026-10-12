@@ -150,6 +150,20 @@ def extract_claims(fragments: list[Fragment]) -> ClaimSet:
             evid = re.search(r"\[(E-[A-Z0-9-]+)\]", sentence)
             # 期间解析前剥离证据 ID（其中的 2024Q4 等标签不是期间声明）
             period, basis = _parse_period(re.sub(r"\[E-[A-Z0-9-]+\]", " ", sentence))
+            if period is None and evid:
+                # 句内无期间词但引用了证据 ID：从唯一 ID 尾部继承期间；
+                # 口径仍优先按句内消歧关键词（单季/累计）判定，
+                # 均无关键词才按 quarter_report 歧义处理。
+                m = re.search(r"(20\d{2}Q[1-4])$", evid.group(1))
+                if m:
+                    period = m.group(1)
+                    stripped = re.sub(r"\[E-[A-Z0-9-]+\]", " ", sentence)
+                    if re.search(r"单季", stripped):
+                        basis = "quarter"
+                    elif re.search(r"累计|全年|年报|年度|年初至", stripped):
+                        basis = "cumulative"
+                    else:
+                        basis = "quarter_report"
 
             # ---- 同比特殊状态词声明（如"净利润由盈转亏"）----
             for word, status in _STATUS_WORDS.items():
@@ -170,7 +184,8 @@ def extract_claims(fragments: list[Fragment]) -> ClaimSet:
                         claim_set.claims.append(Claim(
                             cid=f"C{cid}", text=sentence, location=frag.location,
                             section=frag.section, metric=target,
-                            metric_raw=m.group(0), period=period, period_basis=basis or "cumulative",
+                            metric_raw=m.group(0), period=period,
+                            period_basis=(basis or "cumulative") if period else "cumulative",
                             value=None, display=word, unit="status",
                             evidence_ref=evid.group(1) if evid else None,
                             kind="status_word"))

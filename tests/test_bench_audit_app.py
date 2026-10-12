@@ -13,7 +13,7 @@ from finsight.datasources import em_statements
 from finsight.finance.field_mapping import REPORT_DATE_FIELD
 
 APP = Path(__file__).resolve().parent.parent / "app.py"
-BENCH_PAGE = "投研工作台（闭环演示）"
+BENCH_PAGE = "智能投研工作台"
 
 DATES = [f"{y}-{m:02d}-{d:02d} 00:00:00" for y in (2023, 2024)
          for m, d in ((3, 31), (6, 30), (9, 30), (12, 31))]
@@ -30,6 +30,7 @@ RAW_BY_KIND = {
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch, tmp_path):
+    monkeypatch.setenv("FINSIGHT_IGNORE_ENV_FILE", "1")
     for var in ("FINSIGHT_LLM_API_KEY", "FINSIGHT_LLM_BASE_URL", "FINSIGHT_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("FINSIGHT_LOG_DIR", str(tmp_path / "logs"))
@@ -48,7 +49,7 @@ def _drive(at):
 def test_bench_creates_run_and_threads_run_id(_env):
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
-    at.radio[0].set_value(BENCH_PAGE)
+    at.button(key=f"nav_{BENCH_PAGE}").click()
     at.run()
     at = _drive(at)
 
@@ -68,7 +69,7 @@ def test_bench_creates_run_and_threads_run_id(_env):
 def test_bench_rerun_does_not_duplicate_logs(_env):
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
-    at.radio[0].set_value(BENCH_PAGE)
+    at.button(key=f"nav_{BENCH_PAGE}").click()
     at.run()
     at = _drive(at)
     log = next(_env.glob("run_*.jsonl"))
@@ -83,7 +84,7 @@ def test_bench_rerun_does_not_duplicate_logs(_env):
 def test_bench_full_loop_same_run_and_no_secrets(_env):
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
-    at.radio[0].set_value(BENCH_PAGE)
+    at.button(key=f"nav_{BENCH_PAGE}").click()
     at.run()
     at = _drive(at)
     session = at.session_state["fs_bench_session"]
@@ -109,7 +110,7 @@ def test_bench_full_loop_same_run_and_no_secrets(_env):
 def test_bench_context_switch_finalizes_old_run(_env):
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
-    at.radio[0].set_value(BENCH_PAGE)
+    at.button(key=f"nav_{BENCH_PAGE}").click()
     at.run()
     at = _drive(at)
     # 切换标的重新加载 → 旧 run 应 finish(aborted)，新 run 独立

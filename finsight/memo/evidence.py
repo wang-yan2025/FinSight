@@ -107,17 +107,22 @@ def _add_field_evidence(book: EvidenceBook, eid_prefix: str, label: str, stateme
 
 
 def build_evidence_book(code: str, std_income, std_balance, std_cashflow,
-                        sources: dict | None = None, target_date=None) -> EvidenceBook:
+                        sources: dict | None = None, target_date=None,
+                        company_profile: dict | None = None) -> EvidenceBook:
     """为目标报告期构建证据集（income 必需，balance/cashflow 可缺失并降级）。
 
     target_date 缺省取利润表最新报告期；各表独立取 <= target 的最新报告期，
     不一致时在 missing 中标明实际采用期间，不默默混合。
+    company_profile：公司基本信息（名称/行业等，可为 None=未获取）。
     """
     book = EvidenceBook()
     if std_income is None or std_income.empty:
         book.missing.append("利润表不可用：无法构建备忘录财务证据")
         book.snapshot = {"code": code, "income_period": None}
         return book
+    profile = company_profile or {}
+    if profile:
+        audit_event("profile_loaded", name=profile.get("公司名称", ""))
 
     target = pd.Timestamp(target_date) if target_date is not None else std_income["report_date"].max()
 
@@ -139,7 +144,9 @@ def build_evidence_book(code: str, std_income, std_balance, std_cashflow,
     book.snapshot = {
         "code": code, "target_period": _period_tag(target), "target_date": f"{target:%Y-%m-%d}",
         "periods": {k: (_period_tag(v) if v is not None else None) for k, v in used_periods.items()},
-        "sources": per_source, "company_name": None,  # 公司名称未接入，待补充
+        "sources": per_source,
+        "company_name": profile.get("公司名称") or None,
+        "industry": profile.get("行业") or None,
         "data_source": DATA_SOURCE,
     }
 

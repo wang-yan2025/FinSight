@@ -49,11 +49,12 @@ RAW_BY_KIND = {
     }),
 }
 
-MEMO_PAGE = "买方备忘录（方向6）"
+MEMO_PAGE = "投资备忘录"
 
 
 @pytest.fixture(autouse=True)
 def _no_llm_env(monkeypatch):
+    monkeypatch.setenv("FINSIGHT_IGNORE_ENV_FILE", "1")
     for var in ("FINSIGHT_LLM_API_KEY", "FINSIGHT_LLM_BASE_URL", "FINSIGHT_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
 
@@ -68,7 +69,7 @@ def offline_fetch(monkeypatch):
 def _at(offline_fetch):
     at = AppTest.from_file(str(APP), default_timeout=120)
     at.run()
-    at.radio[0].set_value(MEMO_PAGE)
+    at.button(key=f"nav_{MEMO_PAGE}").click()
     at.run()
     return at
 

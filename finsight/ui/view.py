@@ -157,16 +157,19 @@ def _series_map_by_date(series_df: pd.DataFrame) -> dict:
     return {r["report_date"]: (r["value"], r["reason"]) for _, r in series_df.iterrows()}
 
 
-def _count_reasons(maps: list[dict], names: list[str]) -> list[str]:
-    """把各指标的 reason 汇总为『指标：N 期原因』清单（缺失/口径不成立说明）。"""
+def _count_reasons(maps: list[dict], names: list[str],
+                   displayed_dates: set | None = None) -> list[str]:
+    """把各指标的 reason 汇总为清单；仅统计展示期间（避免历史边界误导）。"""
     notes: list[str] = []
     for name, m in zip(names, maps):
         reasons: dict[str, int] = {}
-        for value, reason in m.values():
+        for date, (value, reason) in m.items():
+            if displayed_dates is not None and date not in displayed_dates:
+                continue
             if pd.isna(value) and reason:
                 reasons[reason] = reasons.get(reason, 0) + 1
         for reason, n in sorted(reasons.items()):
-            notes.append(f"{name}：{n} 期未计算——{reason}")
+            notes.append(f"{name}：{n} 期——{reason}")
     return notes
 
 
@@ -179,6 +182,75 @@ INDICATOR_COLUMNS = [
     "资产负债率（期末时点）", "流动比率（期末时点）",
     "应收账款周转率（年化，累计口径）", "存货周转率（年化，累计口径）",
 ]
+
+
+def latest_kpis(std_income, std_balance, std_cashflow) -> list[dict]:
+    """最新报告期 KPI 卡数据（展示层组装，数值全部来自既有引擎计算）。
+
+    返回 components.kpi_cards 可直接渲染的卡片 dict 列表：
+    {label, value, unit, sub, badge:{text,tone}}
+    """
+    if std_income is None or std_income.empty:
+        return []
+    cards: list[dict] = []
+    latest = std_income.sort_values("report_date").iloc[-1]
+    tag = period_label(latest["report_date"], latest.get("report_type"))
+
+    def _yoy_badge(col_name):
+        out = yoy_series(std_income, col_name, basis="cumulative")
+        if out.empty:
+            return None
+        last = out.sort_values("report_date").iloc[-1]
+        if pd.isna(last["yoy"]):
+            return {"text": "同比不可得", "tone": "neutral"}
+        status = last["status"]
+        pct = f"{last['yoy'] * 100:+.1f}%"
+        if status == "normal":
+            return {"text": pct, "tone": "pass" if last["yoy"] >= 0 else "warn"}
+        label = {"turn_to_profit": "扭亏为盈", "profit_to_loss": "由盈转亏",
+                 "loss_narrowing": "亏损收窄", "loss_widening": "亏损扩大"}.get(status, status)
+        return {"text": f"{label} {pct}", "tone": "fail" if status in
+                ("profit_to_loss", "loss_widening") else "info"}
+
+    def _amount(label, col, unit_note):
+        v = latest.get(col)
+        if pd.isna(v):
+            return None
+        return {"label": label, "value": f"{v / 1e8:,.1f}", "unit": "亿元",
+                "sub": f"{unit_note} · {tag}",
+                "badge": _yoy_badge(col) if col in ("revenue", "net_profit") else None}
+
+    if (rev := _amount("营业收入", "revenue", "累计")):
+        cards.append(rev)
+    if (np_ := _amount("净利润", "net_profit", "累计")):
+        cards.append(np_)
+
+    gm = _apply_map(std_income, gross_margin,
+                    {"revenue": "revenue", "operate_cost": "operate_cost"})
+    gm_last = max(gm.items(), key=lambda kv: kv[0]) if gm else None
+    if gm_last:
+        cards.append({"label": "毛利率", "value": f"{gm_last[1][0] * 100:.1f}", "unit": "%",
+                      "sub": f"累计口径 · {period_label(gm_last[0])}"})
+
+    if std_balance is not None and not std_balance.empty:
+        dar = _apply_map(std_balance, debt_to_asset_ratio,
+                         {"total_liabilities": "total_liabilities",
+                          "total_assets": "total_assets"})
+        dar_last = max(dar.items(), key=lambda kv: kv[0]) if dar else None
+        if dar_last:
+            cards.append({"label": "资产负债率", "value": f"{dar_last[1][0] * 100:.1f}", "unit": "%",
+                          "sub": f"期末时点 · {period_label(dar_last[0])}"})
+
+    if std_cashflow is not None and not std_cashflow.empty:
+        ocf_rows = std_cashflow.sort_values("report_date")
+        ocf = ocf_rows.iloc[-1].get("operating_cash_flow")
+        if pd.notna(ocf):
+            ocf_tag = period_label(ocf_rows.iloc[-1]["report_date"],
+                                   ocf_rows.iloc[-1].get("report_type"))
+            cards.append({"label": "经营现金流净额",
+                          "value": f"{ocf / 1e8:,.1f}", "unit": "亿元",
+                          "sub": f"累计 · {ocf_tag}"})
+    return cards
 
 
 def build_indicator_display(std_income: pd.DataFrame | None, std_balance: pd.DataFrame | None,
@@ -216,7 +288,10 @@ def build_indicator_display(std_income: pd.DataFrame | None, std_balance: pd.Dat
     def cell(m, date, fmt):
         if m is None:
             return MISSING_TEXT
-        value, _ = m.get(date, (None, ""))
+        entry = m.get(date)
+        if entry is None:
+            return MISSING_TEXT
+        value, reason = entry[0], entry[1] if len(entry) > 1 else ""
         return fmt(value)
 
     rows = []
@@ -244,9 +319,13 @@ def build_indicator_display(std_income: pd.DataFrame | None, std_balance: pd.Dat
     if max_rows is not None:
         df = df.head(max_rows)
 
+    # 仅统计展示期间的数据边界（不包含历史期间，避免误导）
+    displayed_dates = set(std_income.sort_values("report_date", ascending=False)
+                          .head(max_rows if max_rows else len(std_income))["report_date"])
     notes = _count_reasons(
         [yoy_rev, yoy_np, yoy_pnp, gm, nm] + balance_maps,
         ["营收同比", "净利润同比", "归母同比", "毛利率", "净利率"] + balance_names,
+        displayed_dates=displayed_dates,
     )
     if std_balance is None or std_balance.empty:
         notes.append("资产负债表不可用：偿债能力与周转率类指标整列无法计算")

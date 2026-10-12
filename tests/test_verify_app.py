@@ -9,8 +9,8 @@ from finsight.datasources import em_statements
 from finsight.finance.field_mapping import REPORT_DATE_FIELD
 
 APP = Path(__file__).resolve().parent.parent / "app.py"
-VERIFY_PAGE = "研报纠错（方向5）"
-MEMO_PAGE = "买方备忘录（方向6）"
+VERIFY_PAGE = "独立报告核验"
+MEMO_PAGE = "投资备忘录"
 
 
 def qd(year, quarter):
@@ -55,6 +55,7 @@ RAW_BY_KIND = {
 
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
+    monkeypatch.setenv("FINSIGHT_IGNORE_ENV_FILE", "1")
     for var in ("FINSIGHT_LLM_API_KEY", "FINSIGHT_LLM_BASE_URL", "FINSIGHT_LLM_MODEL"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(em_statements, "fetch_statement",
@@ -74,7 +75,7 @@ def _all_text(at) -> str:
 
 
 def _generate_memo(at):
-    at.radio[0].set_value(MEMO_PAGE)
+    at.button(key=f"nav_{MEMO_PAGE}").click()
     at.run()
     at.text_input(key="fs_memo_code").set_value("600519")
     at.button(key="fs_memo_load").click().run()
@@ -86,7 +87,7 @@ def test_verify_memo_end_to_end():
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
     _generate_memo(at)
-    at.radio[0].set_value(VERIFY_PAGE)
+    at.button(key=f"nav_{VERIFY_PAGE}").click()
     at.run()
     assert "尚未生成投资备忘录" not in _all_text(at)  # 备忘录在会话中
     assert "SH600519" in _all_text(at)
@@ -104,7 +105,7 @@ def test_verify_memo_end_to_end():
 def test_verify_requires_memo_or_file():
     at = AppTest.from_file(str(APP), default_timeout=120)
     at.run()
-    at.radio[0].set_value(VERIFY_PAGE)
+    at.button(key=f"nav_{VERIFY_PAGE}").click()
     at.run()
     text = _all_text(at)
     assert "尚未生成投资备忘录" in text  # 无备忘录时入口 A 给出引导
@@ -114,7 +115,7 @@ def test_verify_stale_result_cleared_on_context_change():
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
     _generate_memo(at)
-    at.radio[0].set_value(VERIFY_PAGE)
+    at.button(key=f"nav_{VERIFY_PAGE}").click()
     at.run()
     at.button(key="fs_verify_run").click().run()
     assert "核验完成" in _all_text(at)
@@ -130,7 +131,7 @@ def test_verify_invalid_code_errors():
     at = AppTest.from_file(str(APP), default_timeout=180)
     at.run()
     _generate_memo(at)
-    at.radio[0].set_value(VERIFY_PAGE)
+    at.button(key=f"nav_{VERIFY_PAGE}").click()
     at.run()
     at.text_input(key="fs_verify_code").set_value("abc")
     at.button(key="fs_verify_run").click().run()
