@@ -163,3 +163,130 @@ def fetch_company_profile(code: str, refresh: bool = False) -> dict:
     path.write_text(json.dumps(profile, ensure_ascii=False), encoding="utf-8")
     audit_event("profile_fetch_ok", kind="profile", name=profile.get("公司名称", ""))
     return profile
+
+
+# ---------------- 行情 / 估值 / 宏观数据 ----------------
+
+def _em_session() -> "requests.Session":
+    import requests
+    s = requests.Session()
+    s.trust_env = False
+    return s
+
+
+def _em_headers() -> dict:
+    return {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+
+
+def fetch_kline(code: str, days: int = 250, refresh: bool = False) -> pd.DataFrame:
+    """获取日 K 线（前复权），列：date,open,high,low,close,volume,amount。带缓存。"""
+    em_symbol = to_em_symbol(code)
+    ensure_dirs()
+    path = CACHE_DIR / f"{em_symbol}_kline.csv"
+    if not refresh and path.exists() and _cache_age_hours(path) < 12:
+        return pd.read_csv(path, encoding="utf-8-sig")
+    if os.environ.get("FINSIGHT_OFFLINE") == "1":
+        if path.exists():
+            return pd.read_csv(path, encoding="utf-8-sig")
+        return pd.DataFrame()
+    secid = ("1." if em_symbol.startswith("SH") else "0.") + code
+    from datetime import datetime, timedelta
+    beg = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+    try:
+        with _no_proxy():
+            s = _em_session()
+            resp = s.get(
+                "http://push2his.eastmoney.com/api/qt/stock/kline/get",
+                params={"secid": secid, "klt": "101", "fqt": "1",
+                        "beg": beg, "end": "20991231",
+                        "fields1": "f1,f2,f3,f4,f5,f6",
+                        "fields2": "f51,f52,f53,f54,f55,f56,f57,f61"},
+                headers=_em_headers(), timeout=15)
+        klines = (resp.json().get("data") or {}).get("klines") or []
+        if not klines:
+            return pd.DataFrame()
+        rows = []
+        for line in klines:
+            parts = line.split(",")
+            rows.append({"date": parts[0], "open": float(parts[1]),
+                         "close": float(parts[2]), "high": float(parts[3]),
+                         "low": float(parts[4]), "volume": float(parts[5]),
+                         "amount": float(parts[6]) if len(parts) > 6 else 0.0})
+        df = pd.DataFrame(rows)
+        df.to_csv(path, index=False, encoding="utf-8-sig")
+        audit_event("kline_fetch_ok", rows=len(df))
+        return df
+    except Exception as exc:
+        audit_fail("kline_fetch_failed", exc)
+        logger.warning("获取 %s K线失败：%s", em_symbol, exc)
+        return pd.DataFrame()
+
+
+def fetch_valuation(code: str, refresh: bool = False) -> dict:
+    """获取实时估值快照：PE(TTM)/PB/PS/总市值/流通市值。"""
+    em_symbol = to_em_symbol(code)
+    ensure_dirs()
+    path = CACHE_DIR / f"{em_symbol}_valuation.json"
+    if not refresh and path.exists() and _cache_age_hours(path) < 4:
+        return json.loads(path.read_text(encoding="utf-8"))
+    if os.environ.get("FINSIGHT_OFFLINE") == "1":
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        return {}
+    secid = ("1." if em_symbol.startswith("SH") else "0.") + code
+    try:
+        with _no_proxy():
+            s = _em_session()
+            resp = s.get(
+                "http://push2.eastmoney.com/api/qt/stock/get",
+                params={"secid": secid,
+                        "fields": "f57,f58,f162,f167,f164,f168,f116,f117"},
+                headers=_em_headers(), timeout=15)
+        d = resp.json().get("data") or {}
+        # 东财返回的估值需要除以 100
+        val = {"名称": d.get("f58", ""), "PE_TTM": (d.get("f162") or 0) / 100,
+               "PB": (d.get("f167") or 0) / 100, "PS": (d.get("f164") or 0) / 100,
+               "总市值": d.get("f116"), "流通市值": d.get("f117")}
+        if val["PE_TTM"] > 0:
+            path.write_text(json.dumps(val, ensure_ascii=False), encoding="utf-8")
+            audit_event("valuation_fetch_ok", pe=val["PE_TTM"])
+            return val
+        return {}
+    except Exception as exc:
+        audit_fail("valuation_fetch_failed", exc)
+        return {}
+
+
+def fetch_macro(refresh: bool = False) -> dict:
+    """获取宏观指标（PMI 等），带缓存；获取失败返回空 dict（降级标注）。"""
+    ensure_dirs()
+    path = CACHE_DIR / "_macro.json"
+    if not refresh and path.exists() and _cache_age_hours(path) < 24:
+        return json.loads(path.read_text(encoding="utf-8"))
+    if os.environ.get("FINSIGHT_OFFLINE") == "1":
+        if path.exists():
+            return json.loads(path.read_text(encoding="utf-8"))
+        return {}
+    result = {}
+    try:
+        with _no_proxy():
+            s = _em_session()
+            resp = s.get(
+                "https://datacenter-web.eastmoney.com/api/data/v1/get",
+                params={"reportName": "RPT_ECONOMY_PMI",
+                        "columns": "REPORT_DATE,MAKE_INDEX",
+                        "pageSize": "3", "sortColumns": "REPORT_DATE",
+                        "sortTypes": "-1"},
+                headers={"User-Agent": "Mozilla/5.0",
+                         "Referer": "https://data.eastmoney.com/"}, timeout=15)
+        data = ((resp.json().get("result") or {}).get("data") or [])
+        if data:
+            latest = data[0]
+            result["PMI"] = {"值": latest.get("MAKE_INDEX"),
+                             "日期": str(latest.get("REPORT_DATE", ""))[:10]}
+            result["PMI_荣枯线"] = 50.0
+    except Exception as exc:
+        logger.warning("宏观数据获取失败：%s", exc)
+    if result:
+        path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    return result

@@ -126,6 +126,50 @@ def yoy_growth(current: float | None, prior: float | None) -> float | None:
     return (current - prior) / abs(prior)
 
 
+def qoq_series(std: pd.DataFrame, col: str) -> pd.DataFrame:
+    """环比（QoQ）序列：单季口径，当季 vs 上一季。
+
+    返回列：report_date, year, quarter, current_sq, prior_sq, qoq, status, reason。
+    环比仅对单季值计算（先经 derive_single_quarters 还原）；
+    Q1 的上一季为上年 Q4（跨年环比）。
+    """
+    from finsight.finance.quarterly import derive_single_quarters, period_of
+
+    derived = derive_single_quarters(std, [col])
+    sq_col = f"{col}__sq"
+    # 建 {(y,q): 单季值} 映射
+    sq: dict[tuple[int, int], float] = {}
+    dates: dict[tuple[int, int], pd.Timestamp] = {}
+    for _, r in derived.frame.iterrows():
+        if pd.notna(r["year"]) and pd.notna(r[sq_col]):
+            key = (int(r["year"]), int(r["quarter"]))
+            sq[key] = float(r[sq_col])
+            dates[key] = r["report_date"]
+
+    rows = []
+    for key in sorted(sq):
+        y, q = key
+        prev_key = (y, q - 1) if q > 1 else (y - 1, 4)
+        cur = sq[key]
+        prior = sq.get(prev_key)
+        row = {
+            "report_date": dates[key], "year": y, "quarter": q,
+            "current_sq": cur,
+            "prior_sq": prior if prior is not None else math.nan,
+            "qoq": math.nan, "status": "", "reason": "",
+        }
+        if prior is None:
+            row["reason"] = "上一季度单季值缺失"
+        elif prior == 0:
+            row["reason"] = "上一季度为 0，环比无定义"
+        else:
+            val = (cur - prior) / abs(prior)
+            row["qoq"] = val
+            row["status"] = "normal"
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def yoy_status(current: float | None, prior: float | None) -> str:
     """同比状态分类：防止扭亏/由盈转亏/亏损收窄/亏损扩大被误读为普通增长。
 

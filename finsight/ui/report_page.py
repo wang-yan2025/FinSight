@@ -1,14 +1,15 @@
-"""财报分析页（方向2）：查询 → KPI → 指标/趋势/风险/报表。
-
-UI 升级版：查询卡片、KPI 卡、风险级别徽标；业务逻辑与 widget key 不变。
-"""
+"""财报分析页（方向2，PRD V2.0）：S1–S7 预警 + 技术面 + 结论卡 + 指标/趋势。"""
 import pandas as pd
 import streamlit as st
 
-from finsight.datasources.em_statements import STATEMENT_KINDS
+from finsight.datasources.em_statements import STATEMENT_KINDS, fetch_kline
 from finsight.datasources.symbols import to_em_symbol
+from finsight.finance.conclusion import build_conclusion
 from finsight.finance.field_mapping import standardize_statement
-from finsight.ui.components import badge, page_header, section_title
+from finsight.finance.scoring import compute_score
+from finsight.finance.signals_v2 import LEVEL_COLOR, LEVEL_CN, assess_risk
+from finsight.finance.technical import analyze_technical
+from finsight.ui.components import badge, kpi_cards, page_header
 from finsight.ui.view import (
     build_display_frame,
     build_indicator_display,
@@ -22,7 +23,7 @@ PERIOD_CHOICES = (4, 8, 12, 24)
 _STATE_KEY = "fs_analysis_v1"
 
 CHART_TITLES = {
-    "单季流量": "单季营业收入 / 净利润 / 经营现金流净额（亿元，单季口径，缺失期不插值）",
+    "单季流量": "单季营业收入 / 净利润 / 经营现金流净额（亿元，单季口径）",
     "盈利比率": "毛利率 / 净利率（%，累计口径）",
     "偿债比率": "资产负债率（%，期末时点）与流动比率（倍，期末时点）",
 }
@@ -91,7 +92,15 @@ def render_report_page() -> None:
     std_balance = std_map.get("balance")
     std_cashflow = std_map.get("cashflow")
 
-    # ---- 结果概览条 + KPI ----
+    # ---- S1–S7 + 技术面 + 评分/结论（V2.0 新增） ----
+    risk = assess_risk(std_income, std_balance, std_cashflow)
+    kline = fetch_kline(state["code"], days=250)
+    tech = analyze_technical(kline) if not kline.empty else None
+    score = compute_score(std_income, std_balance, std_cashflow,
+                          technical=tech, risk=risk)
+    conclusion = build_conclusion(score, risk, tech)
+
+    # ---- 结果概览条 + KPI + 结论卡 ----
     src_note = "；".join(f"{statement_caption(k).split('｜')[0]}：{s}"
                          for k, s in state["sources"].items())
     st.markdown(f'<div class="fs-lift fs-srcnote">查询标的 <b>{to_em_symbol(state["code"])}</b>'
@@ -102,11 +111,19 @@ def render_report_page() -> None:
 
     kpis = latest_kpis(std_income, std_balance, std_cashflow)
     if kpis:
-        from finsight.ui.components import kpi_cards
         kpi_cards(kpis)
 
-    tab_overview, tab_trend, tab_signals, tab_statements = st.tabs(
-        ["指标概览", "趋势分析", "风险信号", "三大报表"]
+    # ---- 结论卡（评级/置信度/风险/技术面） ----
+    c_rate, c_score, c_risk, c_tech = st.columns(4)
+    c_rate.metric("投资评级", conclusion.rating, conclusion.confidence)
+    c_score.metric("综合评分", f"{conclusion.score_total:.0f}", f"/100")
+    c_risk.metric("风险预警", conclusion.risk_level)
+    c_tech.metric("技术面", "偏多" if tech and "上升" in tech.trend else
+                  ("偏空" if tech and "下降" in tech.trend else "中性/无数据"))
+    st.caption(conclusion.rationale + "。" + conclusion.disclaimers[0])
+
+    tab_overview, tab_trend, tab_tech, tab_signals, tab_statements = st.tabs(
+        ["指标概览", "趋势分析", "技术面", "风险预警 S1–S7", "三大报表"]
     )
 
     with tab_overview:
@@ -116,10 +133,9 @@ def render_report_page() -> None:
             st.warning(indicator_notes[0] if indicator_notes else "指标概览不可用。")
         else:
             st.dataframe(indicator_df, width="stretch", hide_index=True)
-            st.caption("口径说明：同比列为累计口径（与同列金额一致）；周转率为年化值（次/年）；"
-                       "特殊同比状态（扭亏为盈/由盈转亏/亏损收窄/亏损扩大）按状态分类显示，不作普通增减解读。")
+            st.caption("口径说明：同比列为累计口径；周转率为年化值（次/年）。")
         if indicator_notes:
-            with st.expander(f"数据边界说明（{len(indicator_notes)} 条，仅涉及上方展示期间）"):
+            with st.expander(f"数据边界说明（{len(indicator_notes)} 条）"):
                 for note in indicator_notes:
                     st.write(f"- {note}")
 
@@ -135,65 +151,58 @@ def render_report_page() -> None:
             st.line_chart(frame)
             st.caption("横轴为报告期（时间正序）；缺失期显示断点，不插值。")
 
-    with tab_signals:
-        from finsight.ui.signals_view import evaluate_available
-        analysis = evaluate_available(std_income, std_cashflow, std_balance,
-                                      company=to_em_symbol(state["code"]))
-        high = [s for s in analysis.signals if s.level == "high"]
-        medium = [s for s in analysis.signals if s.level == "medium"]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("触发信号总数", len(analysis.signals))
-        c2.metric("较高关注（high）", len(high))
-        c3.metric("关注（medium）", len(medium))
-        st.info(
-            "以下均为**风险提示（risk_hint）**，不构成财务造假或违规的认定；"
-            "**未触发信号不代表公司不存在风险**；阈值为第一版启发式参数（详见引擎文档）。"
-        )
-        if analysis.signals:
-            from finsight.ui.signals_view import LEVEL_CN, format_metric_lines, signal_summary_frame
-            st.dataframe(signal_summary_frame(analysis.signals), width="stretch", hide_index=True)
-            for s in analysis.signals:
-                # expander 标题不支持 HTML（原生 Streamlit 限制）：标题用纯文本，
-                # 徽标样式放在展开内容里
-                level_mark = "⛔" if s.level == "high" else "⚠"
-                title = f"{level_mark} {LEVEL_CN.get(s.level, s.level)}｜{s.rule_id} {s.name} · {s.period}"
-                with st.expander(title):
-                    tone = "fail" if s.level == "high" else "warn"
-                    st.markdown(badge(LEVEL_CN.get(s.level, s.level), tone),
-                                unsafe_allow_html=True)
-                    st.write(f"**触发条件**：{s.condition}")
-                    st.write("**关键数值**")
-                    for line in format_metric_lines(s.metrics):
-                        st.write(f"- {line}")
-                    st.write("**口径与数据来源**")
-                    for key, value in s.fields_used.items():
-                        st.write(f"- {key}：{value}")
-                    if s.caveats:
-                        st.write("**口径限制**")
-                        for caveat in s.caveats:
-                            st.write(f"- {caveat}")
-                    st.write(f"**风险解释**：{s.interpretation}")
-                    st.write("**建议人工核查**")
-                    for tip in s.suggestions:
-                        st.write(f"- {tip}")
+    with tab_tech:
+        if tech is None:
+            st.warning("K 线数据不可用（需联网获取），技术面分析无法展示。")
         else:
-            st.write("当前数据下四类规则均未触发信号（已评估部分见下方说明）。")
-        if analysis.unevaluated:
-            with st.expander(f"无法评估的期间/规则（{len(analysis.unevaluated)} 条，数据不足，非未触发）"):
-                for note in analysis.unevaluated:
-                    st.write(f"- {note}")
+            st.markdown(f"**技术面小结**：{tech.summary}")
+            t1, t2, t3, t4 = st.columns(4)
+            t1.metric("最新收盘", f"{tech.latest_close:.2f}")
+            t2.metric("MA5 / MA20", f"{tech.ma5 or '—'} / {tech.ma20 or '—'}")
+            t3.metric("MACD", tech.macd_signal or "—")
+            t4.metric("RSI(14)", f"{tech.rsi14 or '—'} {tech.rsi_signal}")
+            t5, t6, t7, t8 = st.columns(4)
+            t5.metric("KDJ", tech.kdj_signal or "—")
+            t6.metric("量比", tech.volume_ratio or "—")
+            t7.metric("支撑位", tech.support or "—")
+            t8.metric("压力位", tech.resistance or "—")
+            if not kline.empty:
+                st.line_chart(kline.set_index("date")["close"], height=300)
+                st.caption("日 K 线收盘价（前复权，近 250 日）")
+
+    with tab_signals:
+        st.markdown(f"### 预警等级：{risk.level_cn}")
+        st.progress(min(risk.triggered_count / 3, 1.0))
+        c_s, c_t = st.columns(2)
+        c_s.metric("触发信号数", f"{risk.triggered_count} / 7")
+        c_t.metric("预警级别", risk.level_cn)
+        st.caption(risk.summary)
+        st.info("以下均为风险提示（risk_hint），不构成财务造假认定；未触发不代表无风险。")
+        # S1–S7 汇总表
+        signal_rows = [{"信号": s.sid, "名称": s.name, "维度": s.dimension,
+                        "状态": "🔴 触发" if s.triggered else "🟢 未触发",
+                        "判定": s.detail} for s in risk.signals]
+        st.dataframe(pd.DataFrame(signal_rows), width="stretch", hide_index=True)
+        for s in risk.signals:
+            mark = "🔴" if s.triggered else "🟢"
+            tone = "fail" if s.triggered else "pass"
+            with st.expander(f"{mark} {s.sid} {s.name}（{s.dimension}）"):
+                st.markdown(badge("触发" if s.triggered else "未触发", tone),
+                            unsafe_allow_html=True)
+                st.write(f"**判定说明**：{s.detail}")
+                st.caption(f"证据：{s.evidence[:200]}")
 
     with tab_statements:
-        st.caption("字段为标准中文名（映射自东财原始列）；表格可横向滚动查看全部字段。")
+        st.caption("字段为标准中文名；表格可横向滚动查看全部字段。")
         sub_tabs = st.tabs([statement_caption(kind).split("｜")[0] for kind in STATEMENT_KINDS])
         for sub_tab, kind in zip(sub_tabs, STATEMENT_KINDS):
             with sub_tab:
                 if kind in std_map:
                     display = build_display_frame(std_map[kind], kind, n_periods)
                     if isinstance(display, pd.DataFrame) and display.empty:
-                        st.warning("该报表无有效报告期数据（接口返回为空），已如实展示。")
+                        st.warning("该报表无有效报告期数据，已如实展示。")
                     else:
                         st.caption(statement_caption(kind))
                         st.dataframe(display, width="stretch", hide_index=True)
                 else:
-                    st.warning("该报表获取失败，无法展示（见页首错误提示）。")
+                    st.warning("该报表获取失败（见页首提示）。")

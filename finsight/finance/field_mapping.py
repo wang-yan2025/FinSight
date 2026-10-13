@@ -89,6 +89,10 @@ FIELD_SPECS: list[FieldSpec] = [
     FieldSpec("accounts_receivable", "应收账款", "ACCOUNTS_RECE", "balance", "元", "mapped", ""),
     FieldSpec("total_equity", "股东权益", "TOTAL_EQUITY", "balance", "元", "mapped",
               "所有者权益合计（含少数股东权益）；归母口径可用 TOTAL_PARENT_EQUITY 列，未列入正式映射"),
+    FieldSpec("goodwill", "商誉", "GOODWILL", "balance", "元", "mapped",
+              "商誉期末余额（S7 信号输入）"),
+    FieldSpec("cip", "在建工程", "CIP", "balance", "元", "mapped",
+              "在建工程期末余额（S7 信号输入；东财列名 CIP，实测确认）"),
     # ---- 利润表（累计值）----
     FieldSpec("revenue", "营业收入", "OPERATE_INCOME", "income", "元", "mapped",
               "营业收入口径（2024 年报 1,709.0 亿与公开年报一致）；累计值；"
@@ -98,6 +102,9 @@ FIELD_SPECS: list[FieldSpec] = [
               "净利润（含少数股东损益）；累计值"),
     FieldSpec("parent_net_profit", "归母净利润", "PARENT_NETPROFIT", "income", "元", "mapped",
               "归属于母公司股东的净利润；累计值"),
+    FieldSpec("deducted_parent_net_profit", "扣非归母净利润", "DEDUCT_PARENT_NETPROFIT",
+              "income", "元", "mapped",
+              "扣除非经常性损益后归母净利润；累计值（S3/S4/V3 信号输入）"),
     # ---- 现金流量表（累计值）----
     FieldSpec("operating_cash_flow", "经营活动产生的现金流量净额", "NETCASH_OPERATE",
               "cashflow", "元", "mapped", "累计值；单季可能为负，年内累计值可能下降"),

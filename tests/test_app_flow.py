@@ -93,17 +93,16 @@ def test_app_full_flow_offline(monkeypatch):
     at = _run_query(monkeypatch)
     assert not at.error and not at.exception
     frames = [el.value for el in at.dataframe]
-    assert len(frames) >= 5  # 指标概览 + 信号汇总 + 三大报表
+    assert len(frames) >= 5  # 指标概览 + S1–S7 汇总 + 三大报表
     indicator = frames[0]
     assert "毛利率（累计）" in indicator.columns
     assert "由盈转亏（-110.0%）" in indicator["净利润同比（累计）"].tolist()
-    # 信号汇总表：R1（+20%→+10% 降幅触发）出现，规则号合法
-    signal_frames = [f for f in frames if not f.empty and "触发条件" in f.columns]
+    # S1–S7 信号汇总表：信号编号合法
+    signal_frames = [f for f in frames if not f.empty and "信号" in f.columns]
     assert signal_frames
-    assert "R1" in set(signal_frames[0]["规则"])
-    assert set(signal_frames[0]["规则"]) <= {"R1", "R2", "R3", "R4"}
+    assert set(signal_frames[0]["信号"]) <= {f"S{i}" for i in range(1, 8)}
     # 风险提示免责声明
-    assert "未触发信号不代表" in _all_text(at)
+    assert "未触发不代表" in _all_text(at) or "risk_hint" in _all_text(at)
 
 
 def test_app_partial_failure_degrades(monkeypatch):

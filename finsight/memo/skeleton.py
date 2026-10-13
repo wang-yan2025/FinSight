@@ -1,9 +1,9 @@
-"""备忘录确定性骨架：章节结构与事实内容由 Python 生成。
+"""备忘录确定性骨架（V2.0）：新增技术面/基本面/结论卡/反向验证章节。
 
 - 财务事实、同比状态、风险信号全部来自证据层（EvidenceBook），
   骨架不做任何财务计算，只组织与表述。
-- 客观事实 / 分析推断 / 情景假设明确区分；LLM 仅填充定性章节
-  （kind="llm"），未生成时状态标记待完善，不用伪造文本填充。
+- V2.0 新增：三层基本面、技术面分析、评分模型、结论卡、反向验证条件。
+- 客观事实 / 分析推断 / 情景假设明确区分；LLM 仅填充定性章节。
 - 本备忘录为研究辅助产物，不构成确定性买卖建议。
 """
 from __future__ import annotations
@@ -13,6 +13,11 @@ from datetime import datetime
 
 import pandas as pd
 
+from finsight.finance.conclusion import ConclusionCard
+from finsight.finance.fundamental import FundamentalView
+from finsight.finance.scoring import InvestmentScore
+from finsight.finance.signals_v2 import RiskAssessment
+from finsight.finance.technical import TechnicalView
 from finsight.memo.evidence import EvidenceBook
 from finsight.ui.view import (
     format_ratio,
@@ -28,19 +33,23 @@ DISCLAIMER = (
     "数据未经上市公司公告原文逐项核验，使用前请按待核实清单人工复核。"
 )
 
-SECTION_ORDER = ["summary", "company", "financials", "thesis", "risks",
-                 "scenarios", "monitoring", "open_questions", "appendix",
-                 "appendix_signals"]
+SECTION_ORDER = ["summary", "conclusion_card", "company", "fundamental", "financials",
+                 "technical", "thesis", "risks", "reverse_validation", "scenarios",
+                 "monitoring", "open_questions", "appendix", "appendix_signals"]
 
 SECTION_TITLES = {
     "summary": "一、研究摘要",
-    "company": "二、公司概况",
-    "financials": "三、财务表现",
-    "thesis": "四、投资逻辑",
-    "risks": "五、关键风险",
-    "scenarios": "六、情景分析",
-    "monitoring": "七、持续跟踪指标",
-    "open_questions": "八、待核实问题",
+    "conclusion_card": "二、结论卡（评级与反向验证）",
+    "company": "三、公司概况",
+    "fundamental": "四、基本面三层分析",
+    "financials": "五、财务表现",
+    "technical": "六、技术面分析",
+    "thesis": "七、投资逻辑",
+    "risks": "八、关键风险",
+    "reverse_validation": "九、反向验证条件",
+    "scenarios": "十、情景分析",
+    "monitoring": "十一、持续跟踪指标",
+    "open_questions": "十二、待核实问题",
     "appendix": "附录A、证据清单",
     "appendix_signals": "附录B、历史风险信号完整清单",
 }
@@ -103,8 +112,13 @@ def _status_cn(status_note: str) -> str:
     return ""
 
 
-def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
-    """从证据集构建确定性备忘录骨架（不含 LLM 内容）。"""
+def build_memo_skeleton(code: str, book: EvidenceBook,
+                        conclusion: ConclusionCard | None = None,
+                        fundamental: FundamentalView | None = None,
+                        technical: TechnicalView | None = None,
+                        risk_v2: RiskAssessment | None = None,
+                        score: InvestmentScore | None = None) -> InvestmentMemo:
+    """从证据集构建确定性备忘录骨架（V2.0 含技术面/基本面/结论卡）。"""
     snapshot = book.snapshot
     period = snapshot.get("target_period", "")
     ev = book.evidences
@@ -143,10 +157,28 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
         f"风险信号：共 {snapshot.get('signals_total', 0)} 条（较高关注 {n_high}，关注 {n_med}），"
         "均为规则触发的风险提示，详见第五节")
     summary.facts.append("初步投资判断：[待 LLM 生成或人工补充——确定性数据不构成投资判断]")
-    summary.facts.append(f"主要不确定性：见第八节待核实清单（当前 {len(book.missing)} 项数据缺口/限制）")
+    summary.facts.append(f"主要不确定性：见待核实清单（当前 {len(book.missing)} 项数据缺口/限制）")
     memo.sections.append(summary)
 
-    # ---- 二、公司概况（真实基本信息 + 如实标注未接入部分）----
+    # ---- 二、结论卡（V2.0 新增：评级/置信度/反向验证） ----
+    cc = MemoSection("conclusion_card", SECTION_TITLES["conclusion_card"], "deterministic")
+    if conclusion:
+        cc.facts.append(f"**投资评级：{conclusion.rating}**（置信度：{conclusion.confidence}）"
+                        f"｜综合评分：{conclusion.score_total:.0f}/100")
+        cc.facts.append(f"建议持有期：{conclusion.holding_period}")
+        cc.facts.append(f"风险预警：{conclusion.risk_level}｜技术面："
+                        + (conclusion.technical_summary or "无数据"))
+        cc.facts.append(f"评分依据：{conclusion.rationale}")
+        if conclusion.key_levels:
+            levels = "；".join(f"{k}={v}" for k, v in conclusion.key_levels.items() if v)
+            cc.facts.append(f"关键价位：{levels}")
+    else:
+        cc.facts.append("结论卡待生成（需传入评分模型与风险分析结果）。")
+    cc.facts.append(conclusion.disclaimers[0] if conclusion else
+                    "本结论仅供研究参考，不构成投资建议。")
+    memo.sections.append(cc)
+
+    # ---- 三、公司概况 ----（原有二、公司概况重编号）
     company = MemoSection("company", SECTION_TITLES["company"], "llm", status="llm_pending")
     cname = snapshot.get("company_name") or "（未获取，待补充）"
     industry = snapshot.get("industry") or "（未获取，待补充）"
@@ -159,7 +191,24 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
     company.facts.append(f"标的代码：{code}｜目标报告期：{period}（利润表口径）")
     memo.sections.append(company)
 
-    # ---- 三、财务表现（分组事实 + 证据引用）----
+    # ---- 四、基本面三层分析（V2.0 新增） ----
+    fund_sec = MemoSection("fundamental", SECTION_TITLES["fundamental"], "deterministic")
+    if fundamental:
+        fund_sec.facts.append(f"**宏观层**：{fundamental.macro_summary}")
+        for f in fundamental.macro_facts:
+            fund_sec.facts.append(f"- {f.label}：{f.value}（{f.signal}）")
+        fund_sec.facts.append(f"**行业层**：{fundamental.industry_summary}")
+        for f in fundamental.industry_facts:
+            fund_sec.facts.append(f"- {f.label}：{f.value}（{f.signal}）")
+        fund_sec.facts.append(f"**公司层**：{fundamental.company_summary}")
+        for f in fundamental.company_facts:
+            fund_sec.facts.append(f"- {f.label}：{f.value}（{f.signal}）")
+        fund_sec.facts.append(f"**基本面总评**：{fundamental.overall}")
+    else:
+        fund_sec.facts.append("基本面三层分析待生成（需传入宏观数据与风险分析结果）。")
+    memo.sections.append(fund_sec)
+
+    # ---- 五、财务表现（分组事实 + 证据引用） ----
     financials = MemoSection("financials", SECTION_TITLES["financials"], "deterministic")
     groups = [
         ("规模与增长", ["REV", "REVYOY", "NP", "NPYOY", "PNP", "PNPYOY"]),
@@ -177,7 +226,6 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
             e = ev.get(f"E-{prefix}-{tag}")
             if e is None:
                 continue
-            # 次周转型指标的 _fmt 已含单位后缀，不再重复追加
             status_suffix = _status_cn(e.note)
             lines.append(f"- {e.label}：{_fmt(e.value, e.unit)}{status_suffix} [{e.eid}]")
         if lines:
@@ -185,10 +233,26 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
             financials.facts.extend(lines)
     financials.facts.append(
         "口径说明：利润表/现金流量表为年初至报告期末累计值，资产负债表为期末时点值；"
-        "同比为同期累计对齐（特殊状态已标注，不作普通增减解读）；周转率为年化值。")
+        "同比为同期累计对齐（特殊状态已标注）；周转率为年化值。")
     memo.sections.append(financials)
 
-    # ---- 四、投资逻辑（正反两面：支持面=确定性财务事实；反面=已触发风险信号）----
+    # ---- 六、技术面分析（V2.0 新增） ----
+    tech_sec = MemoSection("technical", SECTION_TITLES["technical"], "deterministic")
+    if technical:
+        tech_sec.facts.append(f"**趋势**：{technical.trend}")
+        tech_sec.facts.append(f"**MACD**：{technical.macd_signal}")
+        tech_sec.facts.append(f"**RSI(14)**：{technical.rsi14} {technical.rsi_signal}")
+        tech_sec.facts.append(f"**KDJ**：{technical.kdj_signal}")
+        if technical.volume_ratio:
+            tech_sec.facts.append(f"**量比**：{technical.volume_ratio}")
+        if technical.support:
+            tech_sec.facts.append(f"**支撑位**：{technical.support}｜**压力位**：{technical.resistance}")
+        tech_sec.facts.append(f"**技术面小结**：{technical.summary}")
+    else:
+        tech_sec.facts.append("K 线数据不可用（需联网获取），技术面分析待补充。")
+    memo.sections.append(tech_sec)
+
+    # ---- 五、财务表现 ----（原有三、财务表现重编号）
     thesis = MemoSection("thesis", SECTION_TITLES["thesis"], "llm", status="llm_pending")
     thesis.facts.append("以下为客观财务事实层面的正反整理；完整投资逻辑表述 [待 LLM 生成或人工补充]。")
     e_rev, e_np = ev.get(f"E-REVYOY-{period}"), ev.get(f"E-NPYOY-{period}")
@@ -239,7 +303,17 @@ def build_memo_skeleton(code: str, book: EvidenceBook) -> InvestmentMemo:
     risks.facts.append("规则阈值说明：R1—R4 为第一版启发式阈值（详见引擎模块），不代表行业标准。")
     memo.sections.append(risks)
 
-    # ---- 六、情景分析（第一版定性，不出估值数字）----
+    # ---- 九、反向验证条件（V2.0 新增） ----
+    rv = MemoSection("reverse_validation", SECTION_TITLES["reverse_validation"], "deterministic")
+    if conclusion and conclusion.reverse_conditions:
+        rv.facts.append("以下条件触发时，本备忘录的投资逻辑不成立，需重新评估：")
+        for rc in conclusion.reverse_conditions:
+            rv.facts.append(f"- **{rc.indicator}** {rc.threshold}：{rc.description}")
+    else:
+        rv.facts.append("反向验证条件待生成（需传入结论卡）。")
+    memo.sections.append(rv)
+
+    # ---- 十、情景分析（定性，不出估值数字） ----
     scenarios = MemoSection("scenarios", SECTION_TITLES["scenarios"], "llm", status="llm_pending")
     scenarios.facts.append(
         "第一版情景分析为定性描述；未接入股价、估值与行业数据，不生成目标价、"

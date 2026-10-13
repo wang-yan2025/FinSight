@@ -9,3 +9,4 @@ data/logs/
 .streamlit/secrets.toml
 .env
 *.log
+*.docx

@@ -1,13 +1,15 @@
-"""买方投资备忘录页面（方向6）：专业投研文档工作区（UI 升级版）。
-
-业务流程与 widget key 不变：加载 → 选期间/关注问题 → 生成 → 预览 → 导出。
-"""
+"""买方投资备忘录页面（方向6，V2.0）：三层基本面 + 技术面 + 结论卡 + Agent。"""
 import pandas as pd
 import streamlit as st
 
-from finsight.datasources.em_statements import STATEMENT_KINDS
+from finsight.datasources.em_statements import STATEMENT_KINDS, fetch_company_profile, fetch_kline, fetch_macro
 from finsight.datasources.symbols import to_em_symbol
+from finsight.finance.conclusion import build_conclusion
 from finsight.finance.field_mapping import standardize_statement
+from finsight.finance.fundamental import build_fundamental
+from finsight.finance.scoring import compute_score
+from finsight.finance.signals_v2 import assess_risk
+from finsight.finance.technical import analyze_technical
 from finsight.memo.evidence import build_evidence_book
 from finsight.memo.llm import LLMConfig, LLM_PROVENANCE_NOTE, apply_llm_sections, generate_llm_sections
 from finsight.memo.render import memo_to_docx_bytes, memo_to_markdown, memo_to_pdf_bytes
@@ -114,7 +116,26 @@ def render_memo_page() -> None:
                                                data["std"].get("cashflow"), sources=data["sources"],
                                                target_date=selected,
                                                company_profile=data.get("profile"))
-                    memo = build_memo_skeleton(to_em_symbol(data["code"]), book)
+                    st.write("计算 S1–S7 风险预警与技术面…")
+                    risk_v2 = assess_risk(std_income, data["std"].get("balance"),
+                                          data["std"].get("cashflow"))
+                    kline = fetch_kline(data["code"], days=250)
+                    tech = analyze_technical(kline) if not kline.empty else None
+                    st.write("计算评分模型与结论卡…")
+                    score = compute_score(std_income, data["std"].get("balance"),
+                                          data["std"].get("cashflow"),
+                                          technical=tech, risk=risk_v2)
+                    conclusion = build_conclusion(score, risk_v2, tech)
+                    st.write("构建三层基本面框架…")
+                    macro = fetch_macro()
+                    fundamental = build_fundamental(macro, data.get("profile") or {},
+                                                    risk_v2, std_income)
+                    memo = build_memo_skeleton(to_em_symbol(data["code"]), book,
+                                               conclusion=conclusion,
+                                               fundamental=fundamental,
+                                               technical=tech,
+                                               risk_v2=risk_v2,
+                                               score=score)
                     st.write(f"证据 {len(book.evidences)} 条，章节 {len(memo.sections)} 个。")
                     if cfg.configured():
                         st.write("调用 LLM 生成定性章节并校验…")
