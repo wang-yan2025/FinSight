@@ -72,9 +72,22 @@ def render_report_page() -> None:
         with st.status("正在获取三大报表并计算指标与风险信号…", expanded=True) as status:
             st.write("读取财务数据（本地缓存优先，过期才联网）…")
             state = _fetch_and_prepare(code_clean)
-            st.write(f"完成：{len(state['std'])}/3 张报表；开始标准化与指标计算。")
-            status.update(label="数据就绪，指标与风险信号已计算", state="complete",
-                          expanded=False)
+            st.write("获取K线与技术面数据…")
+            kline = fetch_kline(code_clean, days=250)
+            st.write("计算 S1–S7 预警 + 评分模型 + 结论卡…")
+            _risk = assess_risk(state["std"].get("income"), state["std"].get("balance"),
+                                state["std"].get("cashflow"))
+            _tech = analyze_technical(kline) if not kline.empty else None
+            _score = compute_score(state["std"].get("income"), state["std"].get("balance"),
+                                   state["std"].get("cashflow"),
+                                   technical=_tech, risk=_risk)
+            _conclusion = build_conclusion(_score, _risk, _tech)
+            # 缓存计算结果，重渲染直接复用（不重复联网/计算）
+            state["v2"] = {"risk": _risk, "tech": _tech, "score": _score,
+                           "conclusion": _conclusion, "kline": kline}
+            st.session_state[_STATE_KEY] = state
+            st.write(f"完成：{len(state['std'])}/3 张报表，14 章节指标就绪。")
+            status.update(label="分析完成", state="complete", expanded=False)
     else:
         state = st.session_state.get(_STATE_KEY)
 
@@ -92,13 +105,14 @@ def render_report_page() -> None:
     std_balance = std_map.get("balance")
     std_cashflow = std_map.get("cashflow")
 
-    # ---- S1–S7 + 技术面 + 评分/结论（V2.0 新增） ----
-    risk = assess_risk(std_income, std_balance, std_cashflow)
-    kline = fetch_kline(state["code"], days=250)
-    tech = analyze_technical(kline) if not kline.empty else None
-    score = compute_score(std_income, std_balance, std_cashflow,
-                          technical=tech, risk=risk)
-    conclusion = build_conclusion(score, risk, tech)
+    # ---- 使用缓存的 V2.0 计算结果（查询时算一次，重渲染直接复用） ----
+    v2 = state.get("v2") or {}
+    risk = v2.get("risk") or assess_risk(std_income, std_balance, std_cashflow)
+    tech = v2.get("tech")
+    score = v2.get("score") or compute_score(std_income, std_balance, std_cashflow,
+                                               technical=tech, risk=risk)
+    conclusion = v2.get("conclusion") or build_conclusion(score, risk, tech)
+    kline = v2.get("kline", pd.DataFrame())
 
     # ---- 结果概览条 + KPI + 结论卡 ----
     src_note = "；".join(f"{statement_caption(k).split('｜')[0]}：{s}"
