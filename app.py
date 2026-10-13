@@ -17,6 +17,16 @@ from finsight.ui.verify_page import render_verify_page
 
 load_env_file()  # .env（gitignored）中的 LLM 配置优先级低于系统环境变量
 
+# 补充读取 Streamlit Secrets（本地 .streamlit/secrets.toml / 云端平台 Secrets）
+# 仅填充 .env 未覆盖的变量；测试模式（FINSIGHT_IGNORE_ENV_FILE=1）跳过
+if os.environ.get("FINSIGHT_IGNORE_ENV_FILE") != "1":
+    try:
+        for key in ("FINSIGHT_LLM_API_KEY", "FINSIGHT_LLM_BASE_URL", "FINSIGHT_LLM_MODEL"):
+            if key not in os.environ and key in st.secrets:
+                os.environ[key] = st.secrets[key]
+    except Exception:
+        pass  # 非 Streamlit 环境或无 secrets 文件时忽略
+
 st.set_page_config(page_title="FinSight 智研投", page_icon="📊", layout="wide")
 styles.inject()
 
